@@ -1,0 +1,1 @@
+import{j as s}from"./index-BfNEuiEG.js";function a({error:r,message:e}){const n=e||r&&(r.message||r.error||JSON.stringify(r))||"An error occurred";return s.jsxs("div",{className:"error-banner",role:"alert",children:[s.jsx("strong",{style:{marginRight:8},children:"Error:"})," ",n]})}export{a as E};

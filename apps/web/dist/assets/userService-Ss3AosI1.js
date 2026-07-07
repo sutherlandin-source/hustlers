@@ -1,0 +1,1 @@
+import{b as a,h as e}from"./index-BfNEuiEG.js";const c={async listUsers(r={}){try{return(await a.get("/users",{params:r})).data.data.users||[]}catch(t){throw e(t)}},async getProfile(){try{return(await a.get("/users/me")).data.data}catch(r){throw e(r)}},async updateProfile(r){try{return(await a.put("/users/me",r)).data.data}catch(t){throw e(t)}}};export{c as u};
