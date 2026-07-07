@@ -41,15 +41,32 @@ export class NotificationService {
       filter.status = { $ne: NOTIFICATION_STATUSES.ARCHIVED };
     }
 
+    // Debug logging for notification type filtering
+    console.log("[notifications] received type query:", options.type);
+    const allowedTypes = Object.values(NOTIFICATION_TYPES || {});
+    console.log("[notifications] allowed notification types:", allowedTypes);
+
     // Support filtering by notification type (e.g. ?type=message)
     if (options.type) {
-      const allowed = Object.values(NOTIFICATION_TYPES || {});
-      if (!allowed.includes(options.type)) {
+      const allowed = allowedTypes;
+      const requestedType = String(options.type).toLowerCase();
+      const canonicalType = allowed.find((type) => String(type).toLowerCase() === requestedType);
+      if (!canonicalType) {
+        console.log("[notifications] invalid requested type:", options.type);
         throw new ApiError(HTTP_STATUS.BAD_REQUEST, "Invalid notification type");
       }
-      filter.type = options.type;
+      if (canonicalType === NOTIFICATION_TYPES.SYSTEM) {
+        // Keep backward compatibility with older notifications that may not have a type field.
+        filter.$or = [
+          { type: canonicalType },
+          { type: { $exists: false } },
+        ];
+      } else {
+        filter.type = canonicalType;
+      }
     }
 
+    console.log("[notifications] database query filter:", JSON.stringify(filter));
     const limit = Math.min(Number(options.limit) || 20, 100);
     const skip = Number(options.skip) || 0;
     const notifications = await Notification.find(filter)

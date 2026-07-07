@@ -88,6 +88,7 @@ export default function NotificationBell() {
   useEffect(() => {
     if (!open) return;
     const query = {};
+    if (tab === "notifications") query.type = "system";
     if (tab === "messages") query.type = "message";
     fetchNotifications(query);
   }, [open, tab, fetchNotifications]);
