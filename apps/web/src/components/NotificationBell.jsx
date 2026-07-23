@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import useNotificationStore from "../state/useNotificationStore.js";
 import { useAuth } from "../contexts/AuthContext.jsx";
 import { createChatSocket } from "../utils/socket.js";
+import { getLandingPath } from "../utils/roles.js";
 
 function formatRelativeTime(value) {
   if (!value) return "";
@@ -38,6 +39,7 @@ export default function NotificationBell() {
 
   const { accessToken, user } = useAuth();
   const addToast = useNotificationStore((s) => s.addToast);
+  const location = useLocation();
 
   useEffect(() => {
     fetchUnreadCount();
@@ -47,17 +49,22 @@ export default function NotificationBell() {
 
   useEffect(() => {
     if (!accessToken) return;
-    const socket = createChatSocket(accessToken);
-    socket.connect();
+      const socket = createChatSocket(accessToken);
+      socket.connect();
 
-    const handleNotification = (payload) => {
-      try {
-        const convId = payload?.conversationId;
-        const basePath = user?.role === "admin" ? "/admin" : user?.role === "manager" ? "/manager" : "/dashboard";
-        const link = payload?.link || (convId ? `${basePath}/chat/${convId}` : undefined);
+      const handleNotification = (payload) => {
+        try {
+          const convId = payload?.conversationId;
+          const basePath = location.pathname.startsWith("/manager")
+            ? "/manager"
+            : location.pathname.startsWith("/admin")
+              ? "/admin"
+              : getLandingPath(user?.role);
+          const link = payload?.link || (convId ? `${basePath}/chat/${convId}` : undefined);
 
         const local = {
           _id: `local-${Date.now()}-${Math.random()}`,
+          type: "message",
           title: payload?.title || "Notification",
           message: payload?.body || payload?.message || "",
           createdAt: new Date().toISOString(),
@@ -83,12 +90,12 @@ export default function NotificationBell() {
     return () => {
       socket.off("notification", handleNotification);
     };
-  }, [accessToken, user?.role, addToast]);
+  }, [accessToken, user?.role, addToast, location.pathname]);
 
   useEffect(() => {
     if (!open) return;
     const query = {};
-    if (tab === "notifications") query.type = "system";
+    if (tab === "notifications") query.excludeType = "message";
     if (tab === "messages") query.type = "message";
     fetchNotifications(query);
   }, [open, tab, fetchNotifications]);
