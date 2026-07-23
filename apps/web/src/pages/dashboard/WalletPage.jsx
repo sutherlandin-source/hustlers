@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useWalletStore } from "../../state/useWalletStore.js";
+import { walletService } from "../../services/walletService.js";
 import Loader from "../../components/Loader.jsx";
 import ErrorBanner from "../../components/ErrorBanner.jsx";
 import TransactionHistory from "../../components/TransactionHistory.jsx";
@@ -24,10 +25,48 @@ export default function WalletPage() {
     fetchTransactions,
   } = useWalletStore();
 
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawLoading, setWithdrawLoading] = useState(false);
+  const [withdrawError, setWithdrawError] = useState("");
+  const [withdrawSuccess, setWithdrawSuccess] = useState("");
+
   useEffect(() => {
     fetchWallets();
     fetchTransactions({ limit: 20 });
   }, []);
+
+  const handleWithdraw = async (e) => {
+    e.preventDefault();
+    const amount = Number(withdrawAmount);
+    if (!amount || amount <= 0) {
+      setWithdrawError("Enter a valid amount greater than 0.");
+      return;
+    }
+    const available = Number(userWallet?.availableBalance ?? 0);
+    if (amount > available) {
+      setWithdrawError(`Insufficient balance. Available: ${formatCurrency(available, userWallet?.currency || "KSH")}`);
+      return;
+    }
+    const walletId = userWallet?._id || userWallet?.id;
+    if (!walletId) {
+      setWithdrawError("No wallet found to withdraw from.");
+      return;
+    }
+    setWithdrawLoading(true);
+    setWithdrawError("");
+    setWithdrawSuccess("");
+    try {
+      await walletService.withdraw(walletId, amount);
+      setWithdrawSuccess(`Withdrawal of ${formatCurrency(amount, userWallet?.currency || "KSH")} submitted.`);
+      setWithdrawAmount("");
+      fetchWallets();
+      fetchTransactions({ limit: 20 });
+    } catch (err) {
+      setWithdrawError(err?.message || "Withdrawal failed. Please try again.");
+    } finally {
+      setWithdrawLoading(false);
+    }
+  };
 
   return (
     <section className="page-section">
@@ -82,6 +121,35 @@ export default function WalletPage() {
           </p>
         </div>
       </div>
+
+      {/* Withdraw form — only shown once wallet is loaded and there is a balance */}
+      {!walletsLoading && userWallet && (
+        <div className="card-list">
+          <div className="card card-vertical">
+            <h3>Withdraw funds</h3>
+            <p>Transfer your available balance to your registered M-Pesa number.</p>
+            <form onSubmit={handleWithdraw} className="form-grid" style={{ marginTop: 12 }}>
+              <label>
+                Amount ({userWallet?.currency || "KSH"})
+                <input
+                  type="number"
+                  min="1"
+                  step="any"
+                  value={withdrawAmount}
+                  onChange={(e) => setWithdrawAmount(e.target.value)}
+                  placeholder={`Max: ${formatCurrency(userWallet?.availableBalance, userWallet?.currency)}`}
+                  required
+                />
+              </label>
+              {withdrawError && <ErrorBanner error={withdrawError} />}
+              {withdrawSuccess && <div className="success-message">{withdrawSuccess}</div>}
+              <button className="button-primary" type="submit" disabled={withdrawLoading || !userWallet?.availableBalance}>
+                {withdrawLoading ? <Loader label="Processing..." /> : "Withdraw"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       <article className="card card-vertical">
         <h3>Recent transactions</h3>

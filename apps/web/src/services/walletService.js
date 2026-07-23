@@ -50,4 +50,13 @@ export const walletService = {
       throw handleApiError(err);
     }
   },
+
+  async withdraw(walletId, amount, referenceId = "") {
+    try {
+      const res = await axiosInstance.post(`/wallets/${walletId}/withdraw`, { amount, referenceId });
+      return res.data.data;
+    } catch (err) {
+      throw handleApiError(err);
+    }
+  },
 };

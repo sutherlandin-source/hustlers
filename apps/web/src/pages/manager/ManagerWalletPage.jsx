@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext.jsx";
 import { useDataStore } from "../../state/useDataStore.js";
 import { walletService } from "../../services/walletService.js";
 import Loader from "../../components/Loader.jsx";
+import { getKycProfilePath, hasKycVerification } from "../../utils/kyc.js";
 
 function formatCurrency(amount, currency = "KSH") {
   return new Intl.NumberFormat("en-US", {
@@ -37,6 +39,8 @@ function formatApiError(error, fallback) {
 }
 
 export default function ManagerWalletPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const { wallet, walletLoading, fetchWallet, transactions, transactionsLoading, fetchTransactions } = useDataStore();
   const [fundingAmount, setFundingAmount] = useState("");
@@ -64,6 +68,14 @@ export default function ManagerWalletPage() {
     e.preventDefault();
     setFundingError("");
     setFundingSuccess("");
+
+    if (!hasKycVerification(user)) {
+      navigate(getKycProfilePath(location.pathname), {
+        state: { from: location.pathname },
+        replace: true,
+      });
+      return;
+    }
 
     const amount = Number(fundingAmount);
     if (!amount || amount <= 0) {

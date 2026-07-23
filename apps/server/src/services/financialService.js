@@ -9,6 +9,7 @@ import { Wallet } from "../models/Wallet.js";
 import { Transaction } from "../models/Transaction.js";
 import { Contract } from "../models/Contract.js";
 import { Milestone } from "../models/Milestone.js";
+import { User } from "../models/User.js";
 import { AuditLog } from "../models/AuditLog.js";
 import { ApiError } from "../middleware/errorHandler.js";
 import {
@@ -21,9 +22,16 @@ import {
   ENTITY_TYPES,
   CONTRACT_STATUSES,
   MILESTONE_STATUSES,
+  USER_ROLES,
 } from "../config/constants.js";
 import { logger } from "../utils/logger.js";
 import { notifications } from "../utils/notifications.js";
+
+const HUSTLER_COMMISSION_RATE = 0.025;
+
+function resolveMilestoneRecipient(milestone, contract) {
+  return String(milestone?.submittedBy?._id || milestone?.submittedBy || milestone?.assignedTo?._id || milestone?.assignedTo || contract?.seller || "").trim() || null;
+}
 
 export class FinancialService {
   // Safe transaction wrapper that falls back to non-transactional execution for single-node MongoDB
@@ -71,6 +79,14 @@ export class FinancialService {
       await this.createAuditLog(ownerId, AUDIT_ACTIONS.CREATE, ENTITY_TYPES.WALLET, wallet._id, {}, wallet.toObject(), { walletType: type }, session);
     }
     return wallet;
+  }
+
+  async getPlatformWallet(currency, session = null) {
+    const admin = await this.applySession(User.findOne({ role: USER_ROLES.ADMIN, isActive: true }).select("_id"), session);
+    if (!admin?._id) {
+      throw new ApiError(HTTP_STATUS.CONFLICT, "An admin user is required before platform commission can be collected");
+    }
+    return this.getOrCreateWallet(admin._id, currency, WALLET_TYPES.PLATFORM, session);
   }
 
   async getWalletById(walletId, ownerId) {
@@ -320,6 +336,9 @@ export class FinancialService {
 
       const beforeBuyer = buyerWallet.toObject();
       const beforeEscrow = escrowWallet.toObject();
+      if (escrowWallet.availableBalance < amount) {
+        throw new ApiError(HTTP_STATUS.CONFLICT, "Insufficient available balance in escrow wallet");
+      }
 
       // For cross-currency, deduct in source currency but credit in target currency
       const buyerCurrency = String(buyerWallet.currency || "").trim();
@@ -341,10 +360,9 @@ export class FinancialService {
       buyerWallet.lockedBalance += deductAmount;
       buyerWallet.balance = buyerWallet.availableBalance + buyerWallet.lockedBalance;
 
-      // Add funds to escrow but mark them as locked (reserved for the contract)
-      escrowWallet.balance += amount;
+      // Move funds from available escrow into locked escrow for the contract
+      escrowWallet.availableBalance -= amount;
       escrowWallet.lockedBalance += amount;  // Mark funds as locked for this contract
-      // availableBalance stays the same - funds are locked, not available for release until milestones are approved
       escrowWallet.balance = escrowWallet.availableBalance + escrowWallet.lockedBalance;
 
       contract.escrowWallet = escrowWallet._id;
@@ -395,6 +413,15 @@ export class FinancialService {
     return this.safeTransaction(async (session) => {
       const milestone = await Milestone.findById(milestoneId).populate("contract").session(session);
       if (!milestone) throw new ApiError(HTTP_STATUS.NOT_FOUND, "Milestone not found");
+      const hasSubmissionEvidence =
+        Boolean(milestone.submittedBy) ||
+        Boolean(milestone.submittedAt) ||
+        Boolean(milestone.completionNotes?.trim()) ||
+        Boolean(Array.isArray(milestone.proofFiles) && milestone.proofFiles.length) ||
+        Boolean(milestone.submissionData);
+      if (milestone.status === MILESTONE_STATUSES.PENDING && hasSubmissionEvidence) {
+        milestone.status = MILESTONE_STATUSES.SUBMITTED;
+      }
       if (milestone.status !== MILESTONE_STATUSES.SUBMITTED) {
         throw new ApiError(HTTP_STATUS.CONFLICT, "Milestone must be submitted before approval and payment release");
       }
@@ -407,6 +434,10 @@ export class FinancialService {
       if (!contract.escrowWallet) {
         throw new ApiError(HTTP_STATUS.CONFLICT, "Escrow wallet is not configured for this contract");
       }
+      const recipientId = resolveMilestoneRecipient(milestone, contract);
+      if (!recipientId) {
+        throw new ApiError(HTTP_STATUS.CONFLICT, "No recipient is assigned to this milestone");
+      }
 
       const escrowWallet = await Wallet.findById(contract.escrowWallet).session(session);
       if (!escrowWallet) throw new ApiError(HTTP_STATUS.NOT_FOUND, "Escrow wallet not found");
@@ -414,22 +445,29 @@ export class FinancialService {
         throw new ApiError(HTTP_STATUS.CONFLICT, "Insufficient locked funds in escrow wallet");
       }
 
-      const sellerWallet = await this.getOrCreateWallet(contract.seller, contract.currency, WALLET_TYPES.USER, session);
+      const recipientWallet = await this.getOrCreateWallet(recipientId, contract.currency, WALLET_TYPES.USER, session);
+      const platformWallet = await this.getPlatformWallet(contract.currency, session);
       const beforeEscrow = escrowWallet.toObject();
-      const beforeSeller = sellerWallet.toObject();
+      const beforeRecipient = recipientWallet.toObject();
+      const beforePlatform = platformWallet.toObject();
+      const grossAmount = Number(milestone.amount || 0);
+      const commissionAmount = Number((grossAmount * HUSTLER_COMMISSION_RATE).toFixed(2));
+      const netAmount = Number((grossAmount - commissionAmount).toFixed(2));
 
       // Release funds from locked balance (remove from contract lock)
-      escrowWallet.lockedBalance -= milestone.amount;
-      escrowWallet.balance -= milestone.amount;
-      // availableBalance stays the same since funds move from locked to paid-out
+      escrowWallet.lockedBalance -= grossAmount;
+      escrowWallet.balance -= grossAmount;
       
-      sellerWallet.availableBalance += milestone.amount;
-      sellerWallet.balance += milestone.amount;
+      recipientWallet.availableBalance += netAmount;
+      recipientWallet.balance += netAmount;
+      platformWallet.availableBalance += commissionAmount;
+      platformWallet.balance += commissionAmount;
 
-      contract.escrowReleasedAmount += milestone.amount;
+      contract.escrowReleasedAmount += grossAmount;
 
       await escrowWallet.save({ session });
-      await sellerWallet.save({ session });
+      await recipientWallet.save({ session });
+      await platformWallet.save({ session });
       await contract.save({ session });
 
       const reference = referenceId || randomUUID();
@@ -438,7 +476,7 @@ export class FinancialService {
         user: actorId,
         contract: contract._id,
         type: TRANSACTION_TYPES.DEBIT,
-        amount: milestone.amount,
+        amount: grossAmount,
         currency: contract.currency,
         status: TRANSACTION_STATUSES.COMPLETED,
         referenceId: `${reference}-escrow`,
@@ -446,31 +484,62 @@ export class FinancialService {
         balanceAfter: escrowWallet.balance,
       };
       const sellerTransaction = {
-        wallet: sellerWallet._id,
+        wallet: recipientWallet._id,
         user: actorId,
         contract: contract._id,
         type: TRANSACTION_TYPES.CREDIT,
-        amount: milestone.amount,
+        amount: netAmount,
         currency: contract.currency,
         status: TRANSACTION_STATUSES.COMPLETED,
-        referenceId: `${reference}-seller`,
-        description: "Milestone payment credited to seller wallet",
-        balanceAfter: sellerWallet.balance,
+        referenceId: `${reference}-recipient`,
+        description: `Milestone payment credited to hustler wallet after ${HUSTLER_COMMISSION_RATE * 100}% platform fee`,
+        balanceAfter: recipientWallet.balance,
+      };
+      const platformTransaction = {
+        wallet: platformWallet._id,
+        user: platformWallet.owner,
+        contract: contract._id,
+        type: TRANSACTION_TYPES.CREDIT,
+        amount: commissionAmount,
+        currency: contract.currency,
+        status: TRANSACTION_STATUSES.COMPLETED,
+        referenceId: `${reference}-platform-commission`,
+        description: `Platform commission from milestone payment (${HUSTLER_COMMISSION_RATE * 100}%)`,
+        balanceAfter: platformWallet.balance,
+        metadata: {
+          commissionRate: HUSTLER_COMMISSION_RATE,
+          grossAmount,
+          netAmount,
+        },
       };
 
       const txOptions = session ? { session } : {};
-      const [createdEscrowTx, createdSellerTx] = await Transaction.create([escrowTransaction, sellerTransaction], txOptions);
+      const [createdEscrowTx, createdSellerTx, createdPlatformTx] = await Transaction.create([escrowTransaction, sellerTransaction, platformTransaction], txOptions);
 
       milestone.paymentStatus = PAYMENT_STATUSES.RELEASED;
       milestone.paymentReleasedAt = new Date();
       milestone.paymentTransaction = createdSellerTx._id;
       milestone.paymentReferenceId = reference;
+      milestone.metadata = {
+        ...(milestone.metadata || {}),
+        paymentReleasedBy: actorId,
+        paymentReleasedAt: new Date(),
+        paymentRecipientId: recipientId,
+        commissionAmount,
+        grossAmount,
+        netAmount,
+      };
       await milestone.save({ session });
 
-      await this.createAuditLog(actorId, AUDIT_ACTIONS.TRANSACTION, ENTITY_TYPES.MILESTONE, milestone._id, { before: { escrowWallet: beforeEscrow, sellerWallet: beforeSeller } }, { after: { milestone: milestone.toObject() } }, { action: "approveAndReleasePayment", amount: milestone.amount }, session);
+      await this.createAuditLog(actorId, AUDIT_ACTIONS.TRANSACTION, ENTITY_TYPES.MILESTONE, milestone._id, { before: { escrowWallet: beforeEscrow, recipientWallet: beforeRecipient, platformWallet: beforePlatform } }, { after: { milestone: milestone.toObject() } }, { action: "approveAndReleasePayment", amount: grossAmount, recipientId, commissionAmount, netAmount }, session);
 
       notifications.emit("milestone.paymentReleased", { milestone, contract });
-      return { milestone, escrowWallet, sellerWallet, createdEscrowTx, createdSellerTx };
+      notifications.emit("contract.paymentReleased", {
+        contract,
+        amount: grossAmount,
+        recipientPayments: [{ user: recipientId, amount: netAmount }],
+      });
+      return { milestone, escrowWallet, recipientWallet, platformWallet, createdEscrowTx, createdSellerTx, createdPlatformTx };
     });
   }
 
@@ -492,6 +561,10 @@ export class FinancialService {
         if (!contract.escrowWallet) {
           throw new ApiError(HTTP_STATUS.CONFLICT, "Escrow wallet is not configured for this contract");
         }
+        const recipientId = resolveMilestoneRecipient(milestone, contract);
+        if (!recipientId) {
+          throw new ApiError(HTTP_STATUS.CONFLICT, "No recipient is assigned to this milestone");
+        }
 
         const escrowWallet = await Wallet.findById(contract.escrowWallet).session(session);
         if (!escrowWallet) throw new ApiError(HTTP_STATUS.NOT_FOUND, "Escrow wallet not found");
@@ -499,22 +572,29 @@ export class FinancialService {
           throw new ApiError(HTTP_STATUS.CONFLICT, "Insufficient locked funds in escrow wallet");
         }
 
-        const sellerWallet = await this.getOrCreateWallet(contract.seller, contract.currency, WALLET_TYPES.USER, session);
+        const recipientWallet = await this.getOrCreateWallet(recipientId, contract.currency, WALLET_TYPES.USER, session);
+        const platformWallet = await this.getPlatformWallet(contract.currency, session);
         const beforeEscrow = escrowWallet.toObject();
-        const beforeSeller = sellerWallet.toObject();
+        const beforeRecipient = recipientWallet.toObject();
+        const beforePlatform = platformWallet.toObject();
+        const grossAmount = Number(milestone.amount || 0);
+        const commissionAmount = Number((grossAmount * HUSTLER_COMMISSION_RATE).toFixed(2));
+        const netAmount = Number((grossAmount - commissionAmount).toFixed(2));
 
         // Release funds from locked balance (remove from contract lock)
-        escrowWallet.lockedBalance -= milestone.amount;
-        escrowWallet.balance -= milestone.amount;
-        // availableBalance stays the same since funds move from locked to paid-out
+        escrowWallet.lockedBalance -= grossAmount;
+        escrowWallet.balance -= grossAmount;
         
-        sellerWallet.availableBalance += milestone.amount;
-        sellerWallet.balance += milestone.amount;
+        recipientWallet.availableBalance += netAmount;
+        recipientWallet.balance += netAmount;
+        platformWallet.availableBalance += commissionAmount;
+        platformWallet.balance += commissionAmount;
 
-        contract.escrowReleasedAmount += milestone.amount;
+        contract.escrowReleasedAmount += grossAmount;
 
         await escrowWallet.save({ session });
-        await sellerWallet.save({ session });
+        await recipientWallet.save({ session });
+        await platformWallet.save({ session });
         await contract.save({ session });
 
         const reference = referenceId || randomUUID();
@@ -523,7 +603,7 @@ export class FinancialService {
           user: actorId,
           contract: contract._id,
           type: TRANSACTION_TYPES.DEBIT,
-          amount: milestone.amount,
+          amount: grossAmount,
           currency: contract.currency,
           status: TRANSACTION_STATUSES.COMPLETED,
           referenceId: `${reference}-escrow`,
@@ -531,30 +611,61 @@ export class FinancialService {
           balanceAfter: escrowWallet.balance,
         };
         const sellerTransaction = {
-          wallet: sellerWallet._id,
+          wallet: recipientWallet._id,
           user: actorId,
           contract: contract._id,
           type: TRANSACTION_TYPES.CREDIT,
-          amount: milestone.amount,
+          amount: netAmount,
           currency: contract.currency,
           status: TRANSACTION_STATUSES.COMPLETED,
-          referenceId: `${reference}-seller`,
-          description: "Milestone payment credited to seller wallet",
-          balanceAfter: sellerWallet.balance,
+          referenceId: `${reference}-recipient`,
+          description: `Milestone payment credited to hustler wallet after ${HUSTLER_COMMISSION_RATE * 100}% platform fee`,
+          balanceAfter: recipientWallet.balance,
+        };
+        const platformTransaction = {
+          wallet: platformWallet._id,
+          user: platformWallet.owner,
+          contract: contract._id,
+          type: TRANSACTION_TYPES.CREDIT,
+          amount: commissionAmount,
+          currency: contract.currency,
+          status: TRANSACTION_STATUSES.COMPLETED,
+          referenceId: `${reference}-platform-commission`,
+          description: `Platform commission from milestone payment (${HUSTLER_COMMISSION_RATE * 100}%)`,
+          balanceAfter: platformWallet.balance,
+          metadata: {
+            commissionRate: HUSTLER_COMMISSION_RATE,
+            grossAmount,
+            netAmount,
+          },
         };
 
         const txOptions = session ? { session } : {};
-        const [createdEscrowTx, createdSellerTx] = await Transaction.create([escrowTransaction, sellerTransaction], txOptions);
+        const [createdEscrowTx, createdSellerTx, createdPlatformTx] = await Transaction.create([escrowTransaction, sellerTransaction, platformTransaction], txOptions);
 
         milestone.paymentStatus = PAYMENT_STATUSES.RELEASED;
         milestone.paymentReleasedAt = new Date();
         milestone.paymentTransaction = createdSellerTx._id;
         milestone.paymentReferenceId = reference;
+        milestone.metadata = {
+          ...(milestone.metadata || {}),
+          paymentReleasedBy: actorId,
+          paymentReleasedAt: new Date(),
+          paymentRecipientId: recipientId,
+          commissionAmount,
+          grossAmount,
+          netAmount,
+        };
         await milestone.save({ session });
 
-        await this.createAuditLog(actorId, AUDIT_ACTIONS.TRANSACTION, ENTITY_TYPES.MILESTONE, milestone._id, { before: { escrowWallet: beforeEscrow, sellerWallet: beforeSeller } }, { after: { milestone: milestone.toObject() } }, { action: "releasePayment", amount }, session);
+        await this.createAuditLog(actorId, AUDIT_ACTIONS.TRANSACTION, ENTITY_TYPES.MILESTONE, milestone._id, { before: { escrowWallet: beforeEscrow, recipientWallet: beforeRecipient, platformWallet: beforePlatform } }, { after: { milestone: milestone.toObject() } }, { action: "releasePayment", amount: grossAmount, recipientId, commissionAmount, netAmount }, session);
         notifications.emit("milestone.paymentReleased", { milestone, contract });
-        result = { milestone, escrowWallet, sellerWallet, createdEscrowTx, createdSellerTx };
+        notifications.emit("contract.paymentReleased", {
+          contract,
+          amount: grossAmount,
+          recipientPayments: [{ user: recipientId, amount: netAmount }],
+        });
+        result = { milestone, escrowWallet, recipientWallet, platformWallet, createdEscrowTx, createdSellerTx, createdPlatformTx };
       });
       return result;
     } finally {

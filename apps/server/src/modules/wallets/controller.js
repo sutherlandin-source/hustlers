@@ -100,26 +100,33 @@ export async function fundWallet(req, res, next) {
   try {
     const { description } = req.body;
     const amount = Number(req.body.amount);
+    const currency = String(req.body.currency || "KSH").toUpperCase().trim() || "KSH";
+
     // Get user's escrow wallet and fund it
     let wallets = await escrowService.listWallets(req.user.userId);
-    let escrowWallet = wallets.find(w => w.type?.toLowerCase() === "escrow");
-    
+    let escrowWallet = wallets.find(w => w.type?.toLowerCase() === "escrow" && w.currency === currency);
+
+    // Fallback: any escrow wallet if currency-matched one doesn't exist yet
+    if (!escrowWallet) {
+      escrowWallet = wallets.find(w => w.type?.toLowerCase() === "escrow");
+    }
+
     // Create escrow wallet if it doesn't exist
     if (!escrowWallet) {
-      escrowWallet = await escrowService.createWallet(req.user.userId, "KSH", "escrow");
+      escrowWallet = await escrowService.createWallet(req.user.userId, currency, "escrow");
     }
-    
+
     // Direct wallet update without transaction (for development)
     if (amount <= 0) throw new ApiError(400, "Amount must be greater than zero");
-    
+
     const wallet = await Wallet.findById(escrowWallet._id);
     if (!wallet) throw new ApiError(404, "Wallet not found");
     if (wallet.status !== "active") throw new ApiError(409, "Wallet is not active");
-    
+
     wallet.balance += amount;
     wallet.availableBalance += amount;
     await wallet.save();
-    
+
     const transaction = new Transaction({
       wallet: wallet._id,
       user: req.user.userId,
@@ -135,7 +142,7 @@ export async function fundWallet(req, res, next) {
 
     const escrowFunding = await fundPendingContractEscrows(req.user.userId);
     const updatedWallet = await Wallet.findById(wallet._id);
-    
+
     return buildResponse(res, 200, "Escrow wallet funded successfully", {
       wallet: updatedWallet || wallet,
       transaction,

@@ -26,6 +26,7 @@ router.post(
   authenticateToken,
   validate([
     { field: "amount", type: "number", required: true, min: 0.01 },
+    { field: "currency", type: "string", required: false },
     { field: "description", type: "string", required: false },
   ]),
   fundWallet
