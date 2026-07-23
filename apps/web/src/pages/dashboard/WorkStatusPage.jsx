@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext.jsx";
-import { useParams, useNavigate } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { contractsService } from "../../services/contractsService.js";
 import { milestonesService } from "../../services/milestonesService.js";
 import Loader from "../../components/Loader.jsx";
@@ -11,10 +11,23 @@ const STATUS_LABEL = {
   in_progress: "In Progress",
   work_submitted: "Completed",
   needs_revision: "Needs Revision",
+  rejected: "Rejected",
   approved: "Completed",
 };
 
-function formatEscrowStatus(status) {
+function isContractFinalized(contract) {
+  const metadata = contract?.metadata || {};
+  return Boolean(
+    contract?.status === "completed" ||
+      contract?.completedAt ||
+      contract?.finalApprovedAt ||
+      metadata?.disputePaymentReleasedAt ||
+      metadata?.disputeOutcome === "release_full_payment"
+  );
+}
+
+function formatEscrowStatus(contractOrStatus) {
+  const status = typeof contractOrStatus === "object" ? (isContractFinalized(contractOrStatus) ? "released" : contractOrStatus?.escrowStatus) : contractOrStatus;
   const labels = {
     waiting_for_funding: "Waiting For Manager Funding",
     funded: "Payment Secured",
@@ -29,6 +42,13 @@ function canStartWithEscrow(contract) {
   return ["funded", "in_progress", "awaiting_approval"].includes(contract?.escrowStatus);
 }
 
+function getPaymentStatusLabel(stage) {
+  const paymentStatus = String(stage?.paymentStatus || "").toLowerCase();
+  if (paymentStatus === "released") return "Payment Released";
+  if (paymentStatus === "refunded") return "Refunded to Manager";
+  return null;
+}
+
 export default function WorkStatusPage() {
   const { contractId } = useParams();
   const navigate = useNavigate();
@@ -39,6 +59,20 @@ export default function WorkStatusPage() {
   const [contract, setContract] = useState(null);
   const [stages, setStages] = useState([]);
   const [actionLoading, setActionLoading] = useState(false);
+  const isAssignedToMe = () => {
+    if (!contract) return false;
+    const sid = contract.seller?._id || contract.seller?.id || contract.seller;
+    try {
+      return String(sid) === String(userId);
+    } catch (e) {
+      return false;
+    }
+  };
+  const disputeId = contract?.userDisputeId || contract?.metadata?.userDisputeId || contract?.metadata?.disputeId || contract?.disputeId || "";
+  const disputePath = disputeId ? `/dashboard/disputes/${disputeId}` : contractId ? `/dashboard/contracts/${contractId}/dispute` : null;
+  const hasSubmittedWork = stages.some((stage) => ["submitted", "work_submitted"].includes(String(stage?.status || stage?.workStatus || "").toLowerCase()));
+  const hasRejectedWork = stages.some((stage) => ["rejected"].includes(String(stage?.status || stage?.workStatus || "").toLowerCase()));
+  const canOpenDispute = Boolean(contract && (contract.userCanOpenDispute || isAssignedToMe()) && (["active", "assigned", "approved", "disputed"].includes(String(contract?.status || "").toLowerCase()) || hasSubmittedWork || hasRejectedWork));
 
   useEffect(() => {
     if (!contractId) return;
@@ -51,7 +85,7 @@ export default function WorkStatusPage() {
     try {
       const c = await contractsService.get(contractId);
       setContract(c || null);
-      const ms = await milestonesService.list({ contractId });
+      const ms = await milestonesService.list({ contractId, sellerOnly: true });
       setStages(Array.isArray(ms) ? ms : []);
     } catch (err) {
       console.error(err);
@@ -72,16 +106,6 @@ export default function WorkStatusPage() {
   const needsRevision = (s) => s.workStatus === "needs_revision" || s.status === "rejected";
   const nextNotStarted = stages.find((s) => isNotStarted(s));
   const hasInProgress = stages.some((s) => s.workStatus === "in_progress");
-  const isAssignedToMe = () => {
-    if (!contract) return false;
-    const sid = contract.seller?._id || contract.seller?.id || contract.seller;
-    try {
-      return String(sid) === String(userId);
-    } catch (e) {
-      return false;
-    }
-  };
-
   const handleStart = async (stageId) => {
     setError("");
     // Ensure only one in-progress
@@ -163,7 +187,12 @@ export default function WorkStatusPage() {
           <h1 style={{margin:0}}>{contract?.title || "Work Status"}</h1>
           <div style={{color:'var(--muted)'}}>{contract?.description || ""}</div>
         </div>
-        <div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {disputePath && (canOpenDispute || disputeId) && (
+            <Link to={disputePath} className="button-secondary">
+              {disputeId ? "View Dispute" : "Open Dispute"}
+            </Link>
+          )}
           <button className="btn-ghost" onClick={() => navigate(-1)}>← Back</button>
         </div>
       </div>
@@ -171,7 +200,7 @@ export default function WorkStatusPage() {
       {error && <ErrorBanner error={error} />}
       {contract && (
         <div className={`status-pill ${canStartWithEscrow(contract) ? "status-completed" : "status-not-started"}`} style={{display:"inline-flex",marginTop:4}}>
-          {formatEscrowStatus(contract.escrowStatus)}
+          {formatEscrowStatus(contract)}
         </div>
       )}
 
@@ -234,7 +263,9 @@ export default function WorkStatusPage() {
                   )}
                 </div>
                 {(s.workStatus === 'work_submitted' || s.workStatus === 'approved') && (
-                  <div className="stage-badge badge-complete">Completed</div>
+                  <div className={`stage-badge ${s.paymentStatus === 'refunded' ? 'badge-rejected' : 'badge-complete'}`}>
+                    {s.paymentStatus === 'released' ? 'Payment Released' : s.paymentStatus === 'refunded' ? 'Refunded to Manager' : 'Completed'}
+                  </div>
                 )}
               </div>
             </div>

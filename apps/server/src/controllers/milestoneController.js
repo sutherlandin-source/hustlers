@@ -46,6 +46,16 @@ export async function rejectMilestone(req, res, next) {
   }
 }
 
+export async function rejectWork(req, res, next) {
+  try {
+    const { id } = req.params;
+    const milestone = await milestoneService.rejectWork(id, req.user.userId, req.body || {});
+    return buildResponse(res, 200, "Work rejected", { milestone });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getMilestone(req, res, next) {
   try {
     const { id } = req.params;

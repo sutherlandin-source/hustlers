@@ -56,6 +56,15 @@ export const milestonesService = {
     }
   },
 
+  async rejectWork(milestoneId, reasonType, comments = "") {
+    try {
+      const res = await axiosInstance.post(`/milestones/${milestoneId}/reject-work`, { reasonType, comments });
+      return res.data.data;
+    } catch (err) {
+      throw handleApiError(err);
+    }
+  },
+
   async updateWorkStatus(milestoneId, workStatus, completionNotes = "", proofFiles = []) {
     if (!milestoneId) throw { message: "Missing milestone id" };
     try {

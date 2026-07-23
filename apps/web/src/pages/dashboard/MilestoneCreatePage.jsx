@@ -4,6 +4,7 @@ import { useAuth } from "../../contexts/AuthContext.jsx";
 import { useMilestonesStore } from "../../state/useMilestonesStore.js";
 import Loader from "../../components/Loader.jsx";
 import ErrorBanner from "../../components/ErrorBanner.jsx";
+import { isManagerRole } from "../../utils/roles.js";
 
 export default function MilestoneCreatePage() {
   const { user } = useAuth();
@@ -13,7 +14,7 @@ export default function MilestoneCreatePage() {
   const { createMilestone, createLoading, createError } = useMilestonesStore();
 
   // Only managers can create work stages
-  if (user?.role !== "manager") {
+  if (!isManagerRole(user?.role)) {
     return (
       <section className="page-section">
         <header className="page-header">
@@ -45,7 +46,7 @@ export default function MilestoneCreatePage() {
       });
       setSuccess("Work stage created successfully.");
       // Redirect based on role
-      if (user?.role === "manager") {
+      if (isManagerRole(user?.role)) {
         navigate(`/manager/contracts/${form.contractId}`);
       } else {
         navigate(`/milestones/${stage._id || stage.id}`);

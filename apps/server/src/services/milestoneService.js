@@ -1,10 +1,10 @@
 import { Milestone } from "../models/Milestone.js";
 import { Contract } from "../models/Contract.js";
 import { ApiError } from "../middleware/errorHandler.js";
-import { HTTP_STATUS, MILESTONE_STATUSES, CONTRACT_STATUSES, ESCROW_STATUSES, WORK_STATUS } from "../config/constants.js";
+import { HTTP_STATUS, MILESTONE_STATUSES, CONTRACT_STATUSES, ESCROW_STATUSES, WORK_STATUS, PAYMENT_STATUSES } from "../config/constants.js";
 import { logger } from "../utils/logger.js";
 import { notifications } from "../utils/notifications.js";
-import { financialService } from "./financialService.js";
+import { escrowService } from "../modules/escrow/service.js";
 
 export class MilestoneService {
   async createMilestone(contractId, input) {
@@ -49,7 +49,7 @@ export class MilestoneService {
   }
 
   async approveMilestone(milestoneId, approverId) {
-    const paymentResult = await financialService.approveAndReleaseMilestonePayment(milestoneId, approverId);
+    const paymentResult = await escrowService.approveAndReleaseMilestonePayment(milestoneId, approverId);
     notifications.emit("milestone.approved", { milestone: paymentResult.milestone });
     return paymentResult.milestone;
   }
@@ -65,6 +65,43 @@ export class MilestoneService {
     milestone.rejectionReason = reason;
     milestone.status = MILESTONE_STATUSES.REJECTED;
     milestone.workStatus = WORK_STATUS.NEEDS_REVISION;
+    await milestone.save();
+
+    const contract = await Contract.findById(milestone.contract);
+    if (contract?.escrowPrepared && contract.escrowStatus !== ESCROW_STATUSES.RELEASED) {
+      contract.escrowStatus = ESCROW_STATUSES.IN_PROGRESS;
+      await contract.save();
+    }
+
+    notifications.emit("milestone.rejected", { milestone });
+    return milestone;
+  }
+
+  async rejectWork(milestoneId, approverId, payload = {}) {
+    const milestone = await Milestone.findById(milestoneId);
+    if (!milestone) throw new ApiError(HTTP_STATUS.NOT_FOUND, "Milestone not found");
+    if (milestone.status !== MILESTONE_STATUSES.SUBMITTED) {
+      throw new ApiError(HTTP_STATUS.CONFLICT, "Milestone is not in a rejectable state");
+    }
+
+    const reasonType = String(payload.reasonType || "").trim();
+    if (!reasonType) {
+      throw new ApiError(HTTP_STATUS.UNPROCESSABLE_ENTITY, "Rejection reason is required");
+    }
+
+    milestone.approvedBy = approverId;
+    milestone.rejectionReason = reasonType;
+    milestone.rejectionComments = String(payload.comments || "").trim();
+    milestone.status = MILESTONE_STATUSES.REJECTED;
+    milestone.workStatus = WORK_STATUS.REJECTED;
+    milestone.paymentStatus = milestone.paymentStatus || PAYMENT_STATUSES.PENDING;
+    milestone.paymentMetadata = {
+      ...(milestone.paymentMetadata || {}),
+      rejectedBy: approverId,
+      rejectedAt: new Date(),
+      rejectionReason: reasonType,
+      rejectionComments: milestone.rejectionComments,
+    };
     await milestone.save();
 
     const contract = await Contract.findById(milestone.contract);

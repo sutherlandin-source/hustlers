@@ -31,15 +31,18 @@ const milestoneSchema = new Schema(
     approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     approvedAt: { type: Date, default: null },
     rejectionReason: { type: String, trim: true },
+    rejectionComments: { type: String, trim: true, default: "" },
     revisionRequestedAt: { type: Date, default: null },
     submissionData: { type: Schema.Types.Mixed },
     completionNotes: { type: String, trim: true },
     proofFiles: [{ type: String }],
+    assignedTo: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
     metadata: { type: Schema.Types.Mixed, default: {} },
   },
   getBaseSchemaOptions()
 );
 
 milestoneSchema.index({ contract: 1, status: 1 });
+milestoneSchema.index({ contract: 1, assignedTo: 1 });
 
 export const Milestone = model("Milestone", milestoneSchema);

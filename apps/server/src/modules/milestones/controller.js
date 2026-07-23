@@ -35,8 +35,8 @@ export async function approveMilestone(req, res, next) {
   try {
     const { id } = req.params;
     const result = await escrowService.approveAndReleaseMilestonePayment(id, req.user.userId);
-    const message = result?.contract?.escrowStatus === "released"
-      ? "Milestone approved and escrow payment released"
+    const message = result?.milestone?.paymentStatus === "released" || result?.contract?.escrowStatus === "released"
+      ? "Milestone approved and payment released"
       : "Milestone approved";
     return buildResponse(res, 200, message, result);
   } catch (err) {
@@ -50,6 +50,16 @@ export async function rejectMilestone(req, res, next) {
     const { reason } = req.body;
     const milestone = await milestoneService.rejectMilestone(id, req.user.userId, reason);
     return buildResponse(res, 200, "Milestone rejected", { milestone });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function rejectWork(req, res, next) {
+  try {
+    const { id } = req.params;
+    const milestone = await milestoneService.rejectWork(id, req.user.userId, req.body || {});
+    return buildResponse(res, 200, "Work rejected", { milestone });
   } catch (err) {
     next(err);
   }

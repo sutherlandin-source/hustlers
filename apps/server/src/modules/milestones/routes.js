@@ -4,7 +4,7 @@
  */
 
 import { Router } from "express";
-import { createMilestone, submitMilestone, approveMilestone, rejectMilestone, getMilestone, listMilestones, updateWorkStatus, requestRevision } from "./controller.js";
+import { createMilestone, submitMilestone, approveMilestone, rejectMilestone, rejectWork, getMilestone, listMilestones, updateWorkStatus, requestRevision } from "./controller.js";
 import { validate } from "../../shared/middleware/validation.js";
 import { authenticateToken } from "../../shared/middleware/auth.js";
 
@@ -23,6 +23,12 @@ router.post(
 router.post("/:id/submit", authenticateToken, validate([{ field: "submissionData", type: "object", required: true }]), submitMilestone);
 router.post("/:id/approve", authenticateToken, approveMilestone);
 router.post("/:id/reject", authenticateToken, validate([{ field: "reason", type: "string", required: true }]), rejectMilestone);
+router.post(
+  "/:id/reject-work",
+  authenticateToken,
+  validate([{ field: "reasonType", type: "string", required: true }]),
+  rejectWork
+);
 router.post("/:id/work-status", authenticateToken, validate([{ field: "workStatus", type: "string", required: true }]), updateWorkStatus);
 router.post("/:id/request-revision", authenticateToken, validate([{ field: "reason", type: "string", required: true }]), requestRevision);
 
