@@ -7,6 +7,7 @@ import { verifyAccessToken } from "../utils/jwt.js";
 import { ApiError } from "./errorHandler.js";
 import { HTTP_STATUS, ERROR_MESSAGES } from "../config/constants.js";
 import { logger } from "../utils/logger.js";
+import { hasAllowedRole } from "../shared/utils/roles.js";
 
 export function authenticateToken(req, _res, next) {
   try {
@@ -44,7 +45,7 @@ export function authorize(...allowedRoles) {
         throw new ApiError(HTTP_STATUS.UNAUTHORIZED, ERROR_MESSAGES.UNAUTHORIZED);
       }
 
-      if (!allowedRoles.includes(req.user.role)) {
+      if (!hasAllowedRole(req.user.role, allowedRoles)) {
         throw new ApiError(HTTP_STATUS.FORBIDDEN, "Insufficient permissions");
       }
 

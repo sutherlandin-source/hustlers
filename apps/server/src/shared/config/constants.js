@@ -46,6 +46,7 @@ export const TOKEN_TYPES = {
 export const USER_ROLES = {
   HUSTLER: "hustler",
   MANAGER: "manager",
+  BOTH: "both",
   ADMIN: "admin",
 };
 
@@ -62,6 +63,7 @@ export const WORK_STATUS = {
   IN_PROGRESS: "in_progress",
   WORK_SUBMITTED: "work_submitted",
   NEEDS_REVISION: "needs_revision",
+  REJECTED: "rejected",
   APPROVED: "approved",
 };
 
@@ -136,6 +138,8 @@ export const PAYMENT_STATUSES = {
 
 export const DISPUTE_STATUSES = {
   OPEN: "open",
+  WAITING_FOR_EVIDENCE: "waiting_for_evidence",
+  WAITING_FOR_RESPONSE: "waiting_for_response",
   UNDER_REVIEW: "under_review",
   RESOLVED: "resolved",
   APPEALED: "appealed",
@@ -155,6 +159,7 @@ export const NOTIFICATION_TYPES = {
   DISPUTE: "dispute",
   CONTRACT: "contract",
   RATING: "rating",
+  MESSAGE: "message",
 };
 
 export const NOTIFICATION_STATUSES = {

@@ -14,7 +14,10 @@ import walletRoutes from "../modules/wallets/index.js";
 import transactionRoutes from "../modules/transactions/index.js";
 import userRoutes from "../modules/users/index.js";
 import conversationRoutes from "../modules/conversations/index.js";
+import supportRoutes from "../modules/support/index.js";
 import messageRoutes from "../modules/messages/index.js";
+import reviewRoutes from "../modules/reviews/index.js";
+import disputeRoutes from "../modules/disputes/index.js";
 
 const router = Router();
 
@@ -49,8 +52,11 @@ router.use("/contracts/:contractId/milestones", milestoneRoutes);
 // Also expose top-level milestones listing for admin/global queries
 router.use("/milestones", milestoneRoutes);
 router.use("/conversations", conversationRoutes);
+router.use("/support", supportRoutes);
 router.use("/messages", messageRoutes);
 router.use("/notifications", notificationRoutes);
+router.use("/reviews", reviewRoutes);
+router.use("/disputes", disputeRoutes);
 
 router.use("/wallets", walletRoutes);
 router.use("/transactions", transactionRoutes);
