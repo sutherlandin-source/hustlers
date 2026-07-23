@@ -2,11 +2,9 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext.jsx";
 import Step1BasicInfo from "./register/Step1BasicInfo.jsx";
-import Step2RoleSelection from "./register/Step2RoleSelection.jsx";
-import Step3Kyc from "./register/Step3Kyc.jsx";
-import Step4ProfileSetup from "./register/Step4ProfileSetup.jsx";
+import Step2Password from "./register/Step2Password.jsx";
 
-const STEPS = ["Basic Info", "Role Selection", "KYC / Trust", "Profile Setup"];
+const STEPS = ["Basic Info", "Password"];
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_PATTERN = /^\+254\d{9}$/;
 
@@ -15,18 +13,9 @@ const DEFAULT_FORM_STATE = {
   lastName: "",
   email: "",
   phoneNumber: "",
+  location: "",
   password: "",
   confirmPassword: "",
-  role: "hustler",
-  idNumber: "",
-  mpesaNumber: "",
-  location: "",
-  skills: [],
-  skillInput: "",
-  bio: "",
-  experienceLevel: "",
-  companyName: "",
-  industry: "",
 };
 
 export default function RegisterPage() {
@@ -45,35 +34,6 @@ export default function RegisterPage() {
     setGlobalError(null);
   };
 
-  const updateSkillInput = (event) => {
-    setFormData((prev) => ({ ...prev, skillInput: event.target.value }));
-    setErrors((prev) => ({ ...prev, skills: null }));
-  };
-
-  const addSkill = () => {
-    const skill = formData.skillInput.trim();
-    if (!skill) {
-      setErrors((prev) => ({ ...prev, skills: "Enter a skill before adding." }));
-      return;
-    }
-    if (formData.skills.includes(skill)) {
-      setFormData((prev) => ({ ...prev, skillInput: "" }));
-      return;
-    }
-    setFormData((prev) => ({
-      ...prev,
-      skills: [...prev.skills, skill],
-      skillInput: "",
-    }));
-  };
-
-  const removeSkill = (skill) => {
-    setFormData((prev) => ({
-      ...prev,
-      skills: prev.skills.filter((item) => item !== skill),
-    }));
-  };
-
   const validateStep = () => {
     const nextErrors = {};
 
@@ -90,47 +50,17 @@ export default function RegisterPage() {
       if (!PHONE_PATTERN.test(formData.phoneNumber.trim())) {
         nextErrors.phoneNumber = "Phone number must use +254 format, e.g. +254712345678.";
       }
-      if (formData.password.length < 8) {
-        nextErrors.password = "Password must be at least 8 characters.";
-      }
-      if (formData.confirmPassword !== formData.password) {
-        nextErrors.confirmPassword = "Passwords must match.";
-      }
-    }
-
-    if (step === 2) {
-      if (!["hustler", "manager"].includes(formData.role)) {
-        nextErrors.role = "Please select Hustler or Manager / Client.";
-      }
-    }
-
-    if (step === 3) {
-      if (!formData.idNumber.trim()) {
-        nextErrors.idNumber = "ID number is required.";
-      }
-      if (!PHONE_PATTERN.test(formData.mpesaNumber.trim())) {
-        nextErrors.mpesaNumber = "M-Pesa number must use +254 format.";
-      }
       if (!formData.location.trim() || formData.location.trim().length < 2) {
         nextErrors.location = "Location is required.";
       }
     }
 
-    if (step === 4) {
-      if (formData.role === "hustler") {
-        if (!formData.skills.length) {
-          nextErrors.skills = "Add at least one skill.";
-        }
-        if (!formData.bio.trim() || formData.bio.trim().length < 20) {
-          nextErrors.bio = "Bio must be at least 20 characters.";
-        }
-        if (!formData.experienceLevel) {
-          nextErrors.experienceLevel = "Select your experience level.";
-        }
-      } else if (formData.role === "manager") {
-        if (!formData.industry.trim() || formData.industry.trim().length < 2) {
-          nextErrors.industry = "Work type / industry is required.";
-        }
+    if (step === 2) {
+      if (formData.password.length < 8) {
+        nextErrors.password = "Password must be at least 8 characters.";
+      }
+      if (formData.confirmPassword !== formData.password) {
+        nextErrors.confirmPassword = "Passwords must match.";
       }
     }
 
@@ -161,16 +91,8 @@ export default function RegisterPage() {
       lastName: formData.lastName.trim(),
       email: formData.email.trim().toLowerCase(),
       phoneNumber: formData.phoneNumber.trim(),
-      password: formData.password,
-      role: formData.role,
-      idNumber: formData.idNumber.trim(),
-      mpesaNumber: formData.mpesaNumber.trim(),
       location: formData.location.trim(),
-      skills: formData.skills,
-      bio: formData.bio.trim(),
-      experienceLevel: formData.experienceLevel,
-      companyName: formData.companyName.trim(),
-      industry: formData.industry.trim(),
+      password: formData.password,
     };
 
     setSubmitting(true);
@@ -178,7 +100,10 @@ export default function RegisterPage() {
 
     try {
       await register(payload);
-      navigate("/", { replace: true });
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("hustlers_pending_role_choice", "true");
+      }
+      navigate("/app", { replace: true });
     } catch (err) {
       if (err && err.errors && typeof err.errors === "object") {
         const messages = Object.values(err.errors).flat();
@@ -198,22 +123,7 @@ export default function RegisterPage() {
       case 1:
         return <Step1BasicInfo data={formData} errors={errors} onChange={updateField} />;
       case 2:
-        return <Step2RoleSelection role={formData.role} error={errors.role} onRoleChange={updateField} />;
-      case 3:
-        return <Step3Kyc data={formData} errors={errors} onChange={updateField} />;
-      case 4:
-        return (
-          <Step4ProfileSetup
-            role={formData.role}
-            data={formData}
-            errors={errors}
-            onChange={updateField}
-            skillInput={formData.skillInput}
-            onSkillInputChange={updateSkillInput}
-            onAddSkill={addSkill}
-            onRemoveSkill={removeSkill}
-          />
-        );
+        return <Step2Password data={formData} errors={errors} onChange={updateField} />;
       default:
         return null;
     }
@@ -225,13 +135,9 @@ export default function RegisterPage() {
     const isPending = stepNum > step;
 
     return (
-      <div key={stepNum} className={`step-indicator-item ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''} ${isPending ? 'pending' : ''}`}>
+      <div key={stepNum} className={`step-indicator-item ${isActive ? "active" : ""} ${isCompleted ? "completed" : ""} ${isPending ? "pending" : ""}`}>
         <div className="step-circle">
-          {isCompleted ? (
-            <span className="step-checkmark">Done</span>
-          ) : (
-            <span className="step-number">{stepNum}</span>
-          )}
+          {isCompleted ? <span className="step-checkmark">Done</span> : <span className="step-number">{stepNum}</span>}
         </div>
         <p className="step-name">{stepName}</p>
       </div>
@@ -243,25 +149,23 @@ export default function RegisterPage() {
   return (
     <div className="auth-form auth-register">
       <div className="form-header">
-        <p className="auth-kicker">Create your account</p>
+        <p className="auth-kicker">Sign up</p>
         <h2>Join HUSTLERS</h2>
-        <p>Set up a secure marketplace profile for freelance work, hiring, escrow, and payouts.</p>
+        <p>Quick setup. Role choice comes after your first login.</p>
       </div>
 
-      {/* Visual Step Indicators */}
       <div className="step-indicators-container">
-        <div className="step-indicators-row">
-          {STEPS.map((stepName, index) => renderStepIndicator(index + 1, stepName))}
-        </div>
+        <div className="step-indicators-row">{STEPS.map((stepName, index) => renderStepIndicator(index + 1, stepName))}</div>
       </div>
 
-      {/* Progress Bar with Percentage */}
       <div className="progress-indicator">
         <div className="progress-bar">
           <div className="progress-fill" style={{ width: `${progressPercentage}%` }} />
         </div>
         <div className="progress-info">
-          <span className="progress-label">Step {step} of {STEPS.length}</span>
+          <span className="progress-label">
+            Step {step} of {STEPS.length}
+          </span>
           <span className="progress-percentage">{Math.round(progressPercentage)}%</span>
         </div>
       </div>
@@ -292,9 +196,13 @@ export default function RegisterPage() {
         <Link to="/auth/login">Sign in</Link>
       </div>
       <div className="auth-navigation">
-        <Link to="/" className="auth-nav-link">Home</Link>
+        <Link to="/" className="auth-nav-link">
+          Home
+        </Link>
         <span className="auth-nav-divider">/</span>
-        <Link to="/" className="auth-nav-link">Browse Platform</Link>
+        <Link to="/" className="auth-nav-link">
+          Browse Platform
+        </Link>
       </div>
     </div>
   );

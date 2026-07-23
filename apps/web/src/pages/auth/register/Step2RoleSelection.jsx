@@ -23,7 +23,7 @@ export default function Step2RoleSelection({ role, error, onRoleChange }) {
           <input type="radio" name="role" value="manager" checked={role === "manager"} onChange={onRoleChange} className="radio-input" />
           <div className="card-content">
             <span className="card-icon">M</span>
-            <strong>Manager / Client</strong>
+            <strong>Manager</strong>
             <p>Post jobs, manage contracts, and hire trusted talent for your projects.</p>
             <ul className="card-features">
               <li>Post job listings</li>
@@ -35,7 +35,7 @@ export default function Step2RoleSelection({ role, error, onRoleChange }) {
       </fieldset>
 
       {error && <p className="field-error field-error-large">{error}</p>}
-      {!error && role && <p className="field-success">Selected: {role === "hustler" ? "Hustler" : "Manager / Client"}</p>}
+      {!error && role && <p className="field-success">Selected: {role === "hustler" ? "Hustler" : "Manager"}</p>}
     </div>
   );
 }

@@ -17,7 +17,6 @@ import {
 } from "../../controllers/authController.js";
 import { validate } from "../../middleware/validation.js";
 import { authenticateToken } from "../../middleware/auth.js";
-import { USER_ROLES } from "../../config/constants.js";
 
 const router = Router();
 
@@ -29,14 +28,6 @@ router.post(
     { field: "firstName", type: "string", required: true, minLength: 2 },
     { field: "lastName", type: "string", required: true, minLength: 2 },
     { field: "phoneNumber", type: "string", required: true, pattern: /^\+254\d{9}$/ },
-    {
-      field: "role",
-      type: "string",
-      required: true,
-      custom: (value) => [USER_ROLES.HUSTLER, USER_ROLES.MANAGER].includes(value),
-    },
-    { field: "idNumber", type: "string", required: true, minLength: 4 },
-    { field: "mpesaNumber", type: "string", required: true, pattern: /^\+254\d{9}$/ },
     { field: "location", type: "string", required: true, minLength: 2 },
     { field: "skills", type: "array", required: false },
     { field: "bio", type: "string", required: false, minLength: 10, maxLength: 500 },

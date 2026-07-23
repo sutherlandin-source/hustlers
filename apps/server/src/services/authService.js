@@ -280,7 +280,6 @@ export class AuthService {
 
   async updateProfile(userId, updates) {
     delete updates.password;
-    delete updates.role;
     delete updates.emailVerificationToken;
     delete updates.passwordResetToken;
 

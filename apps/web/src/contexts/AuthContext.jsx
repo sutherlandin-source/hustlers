@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
 import { registerAuthCallbacks } from "../services/api.js";
 import { authService } from "../services/authService.js";
 
@@ -42,42 +42,23 @@ export function AuthProvider({ children }) {
     localStorage.setItem("hustlers_auth", JSON.stringify({ user, accessToken, refreshToken }));
   }, [user, accessToken, refreshToken]);
 
-  // Register callbacks with API interceptor on mount
-  useEffect(() => {
-    registerAuthCallbacks({
-      getAccessToken: () => accessToken,
-      getRefreshToken: () => refreshToken,
-      setAuth: ({ user: nextUser, accessToken: nextAccessToken, refreshToken: nextRefreshToken }) => {
-        setUser(nextUser);
-        setAccessToken(nextAccessToken);
-        setRefreshToken(nextRefreshToken);
-      },
-      logout: () => {
-        setUser(null);
-        setAccessToken(null);
-        setRefreshToken(null);
-        localStorage.removeItem("hustlers_auth");
-      },
-    });
-  }, [accessToken, refreshToken]);
-
-  const setAuth = ({ user: nextUser, accessToken: nextAccessToken, refreshToken: nextRefreshToken }) => {
+  const setAuth = useCallback(({ user: nextUser, accessToken: nextAccessToken, refreshToken: nextRefreshToken }) => {
     setUser(nextUser);
     setAccessToken(nextAccessToken);
     setRefreshToken(nextRefreshToken);
-  };
+  }, []);
 
-  const updateUser = (nextUser) => {
+  const updateUser = useCallback((nextUser) => {
     setUser(nextUser);
-  };
+  }, []);
 
-  const login = async (credentials) => {
+  const login = useCallback(async (credentials) => {
     const result = await authService.login(credentials);
     setAuth(result);
     return result;
-  };
+  }, [setAuth]);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       if (accessToken) {
         await authService.logout();
@@ -87,13 +68,23 @@ export function AuthProvider({ children }) {
     }
     setAuth({ user: null, accessToken: null, refreshToken: null });
     localStorage.removeItem("hustlers_auth");
-  };
+  }, [accessToken, setAuth]);
 
-  const register = async (payload) => {
+  const register = useCallback(async (payload) => {
     const result = await authService.register(payload);
     setAuth(result);
     return result;
-  };
+  }, [setAuth]);
+
+  // Register callbacks with API interceptor on mount
+  useEffect(() => {
+    registerAuthCallbacks({
+      getAccessToken: () => accessToken,
+      getRefreshToken: () => refreshToken,
+      setAuth,
+      logout,
+    });
+  }, [accessToken, refreshToken, setAuth, logout]);
 
   const value = useMemo(
     () => ({
@@ -107,7 +98,7 @@ export function AuthProvider({ children }) {
       register,
       updateUser,
     }),
-    [user, accessToken, refreshToken, loading]
+    [user, accessToken, refreshToken, loading, login, logout, register, updateUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
