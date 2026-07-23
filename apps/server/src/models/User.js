@@ -80,6 +80,48 @@ const userSchema = new Schema(
       type: String,
       maxlength: [500, "Bio cannot exceed 500 characters"],
     },
+    verificationStatus: {
+      type: String,
+      enum: ["pending", "verified", "rejected"],
+      default: "pending",
+      index: true,
+    },
+    accountStatus: {
+      type: String,
+      enum: ["active", "suspended", "deactivated"],
+      default: "active",
+      index: true,
+    },
+    suspensionReason: {
+      type: String,
+      trim: true,
+    },
+    suspensionDurationDays: {
+      type: Number,
+      min: [0, "Suspension duration cannot be negative"],
+      default: null,
+    },
+    suspensionEndsAt: {
+      type: Date,
+      default: null,
+    },
+    suspendedAt: {
+      type: Date,
+      default: null,
+    },
+    verifiedAt: {
+      type: Date,
+      default: null,
+    },
+    verifiedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    deactivatedAt: {
+      type: Date,
+      default: null,
+    },
     role: {
       type: String,
       enum: Object.values(USER_ROLES),

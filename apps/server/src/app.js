@@ -51,7 +51,21 @@ export function createApp() {
    */
   app.use(
     cors({
-      origin: env.ALLOWED_ORIGINS,
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = new Set(env.ALLOWED_ORIGINS || []);
+        const isLocalDevOrigin =
+          /^http:\/\/localhost:\d+$/.test(origin) ||
+          /^http:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
+          /^http:\/\/10\.0\.2\.2:\d+$/.test(origin);
+
+        if (allowedOrigins.has(origin) || isLocalDevOrigin) {
+          return callback(null, true);
+        }
+
+        return callback(new Error(`CORS blocked for origin: ${origin}`), false);
+      },
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID"],

@@ -80,6 +80,64 @@ const userSchema = new Schema(
       type: String,
       maxlength: [500, "Bio cannot exceed 500 characters"],
     },
+    verificationStatus: {
+      type: String,
+      enum: ["pending", "verified", "rejected"],
+      default: "pending",
+      index: true,
+    },
+    accountStatus: {
+      type: String,
+      enum: ["active", "suspended", "deactivated"],
+      default: "active",
+      index: true,
+    },
+    suspensionReason: {
+      type: String,
+      trim: true,
+    },
+    suspensionDurationDays: {
+      type: Number,
+      min: [0, "Suspension duration cannot be negative"],
+      default: null,
+    },
+    suspensionEndsAt: {
+      type: Date,
+      default: null,
+    },
+    suspendedAt: {
+      type: Date,
+      default: null,
+    },
+    verifiedAt: {
+      type: Date,
+      default: null,
+    },
+    verifiedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    deactivatedAt: {
+      type: Date,
+      default: null,
+    },
+    averageRating: {
+      type: Number,
+      default: 0,
+      min: [0, "Average rating cannot be negative"],
+      max: [5, "Average rating cannot exceed 5"],
+    },
+    totalReviews: {
+      type: Number,
+      default: 0,
+      min: [0, "Total reviews cannot be negative"],
+    },
+    completedContracts: {
+      type: Number,
+      default: 0,
+      min: [0, "Completed contracts cannot be negative"],
+    },
     role: {
       type: String,
       enum: Object.values(USER_ROLES),
@@ -208,6 +266,11 @@ userSchema.methods.getPublicProfile = function () {
 userSchema.index({ email: 1 }, { unique: true, background: true });
 userSchema.index({ role: 1 });
 userSchema.index({ isActive: 1 });
+userSchema.index({ averageRating: -1, totalReviews: -1 });
+userSchema.index({ totalReviews: -1 });
+userSchema.index({ completedContracts: -1 });
+userSchema.index({ isEmailVerified: 1 });
+userSchema.index({ skills: 1 });
 // Ensure phoneNumber is unique only when present (avoids duplicate nulls)
 userSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true, background: true });
 // Legacy `phone` field (if present in DB) should also be unique only when present

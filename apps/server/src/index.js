@@ -59,7 +59,21 @@ async function startServer() {
     const server = http.createServer(app);
     const io = new SocketIOServer(server, {
       cors: {
-        origin: env.ALLOWED_ORIGINS,
+        origin: (origin, callback) => {
+          if (!origin) return callback(null, true);
+
+          const allowedOrigins = new Set(env.ALLOWED_ORIGINS || []);
+          const isLocalDevOrigin =
+            /^http:\/\/localhost:\d+$/.test(origin) ||
+            /^http:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
+            /^http:\/\/10\.0\.2\.2:\d+$/.test(origin);
+
+          if (allowedOrigins.has(origin) || isLocalDevOrigin) {
+            return callback(null, true);
+          }
+
+          return callback(new Error(`CORS blocked for origin: ${origin}`), false);
+        },
         methods: ["GET", "POST"],
         credentials: true,
       },
