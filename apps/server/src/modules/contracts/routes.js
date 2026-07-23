@@ -7,7 +7,7 @@ import { Router } from "express";
 import { createContract, updateContract, assignContract, prepareEscrow, finalApproveContract, closeContract, deleteContract, getContract, listContracts, approveContract, rejectContract, listMyContracts } from "./controller.js";
 import { validate } from "../../shared/middleware/validation.js";
 import { authenticateToken, authorizeRoles } from "../../shared/middleware/auth.js";
-import { USER_ROLES } from "../../config/constants.js";
+import { USER_ROLES } from "../../shared/config/constants.js";
 
 const router = Router();
 
@@ -22,6 +22,16 @@ router.post(
   ]),
   createContract
 );
+
+// ⚠️ Specific GET routes MUST come before GET /:id
+// Hustler: view contracts they applied for
+router.get("/my", authenticateToken, authorizeRoles(USER_ROLES.HUSTLER), listMyContracts);
+
+// Manager-only: list all contracts with status 'applied'
+router.get("/applied", authenticateToken, authorizeRoles(USER_ROLES.MANAGER), (req, res, next) => {
+  req.query.status = "applied";
+  return listContracts(req, res, next);
+});
 
 router.put(
   "/:id",
@@ -43,17 +53,6 @@ router.post("/:id/close", authenticateToken, closeContract);
 router.post("/:id/approve", authenticateToken, authorizeRoles(USER_ROLES.MANAGER), approveContract);
 router.post("/:id/reject", authenticateToken, authorizeRoles(USER_ROLES.MANAGER), validate([{ field: "reason", type: "string", required: false }]), rejectContract);
 router.delete("/:id", authenticateToken, authorizeRoles(USER_ROLES.MANAGER), deleteContract);
-
-// Hustler: view contracts they applied for
-router.get("/my", authenticateToken, authorizeRoles(USER_ROLES.HUSTLER), listMyContracts);
-
-// Manager-only: list all contracts with status 'applied'
-router.get("/applied", authenticateToken, authorizeRoles(USER_ROLES.MANAGER), (req, res, next) => {
-  // delegate to listContracts controller with status filter
-  req.query.status = "applied";
-  return listContracts(req, res, next);
-});
-
 router.get("/:id", authenticateToken, getContract);
 router.get("/", authenticateToken, listContracts);
 

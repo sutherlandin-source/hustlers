@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext.jsx";
 import { useContractsStore } from "../../state/useContractsStore.js";
 import { milestonesService } from "../../services/milestonesService.js";
 import { contractsService } from "../../services/contractsService.js";
+import { isManagerRole } from "../../utils/roles.js";
+import { getKycProfilePath, hasKycVerification } from "../../utils/kyc.js";
 
 const JOB_CATEGORIES = [
   "Cleaning",
@@ -104,6 +106,7 @@ function formDataFromContract(contract) {
 
 export default function ContractCreatePage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { contractId } = useParams();
   const { user } = useAuth();
   const { createContract, updateContract } = useContractsStore();
@@ -117,10 +120,17 @@ export default function ContractCreatePage() {
   const hustlerFee = Number((amountValue * HUSTLER_COMMISSION_RATE).toFixed(2));
   const hustlerNet = Number((amountValue - hustlerFee).toFixed(2));
   const hasPaymentAmount = amountValue > 0;
+  const hasIdentityDetails = hasKycVerification(user);
   const commissionRateLabel = `${HUSTLER_COMMISSION_RATE * 100}%`;
+  const redirectToKyc = () => {
+    navigate(getKycProfilePath(location.pathname), {
+      state: { from: location.pathname },
+      replace: true,
+    });
+  };
 
   useEffect(() => {
-    if (!isEditMode || user?.role !== "manager") return;
+    if (!isEditMode || !isManagerRole(user?.role)) return;
 
     let cancelled = false;
     async function loadContractForEdit() {
@@ -154,7 +164,7 @@ export default function ContractCreatePage() {
   }, [contractId, isEditMode, user?._id, user?.id, user?.role]);
 
   // Role check
-  if (user?.role !== "manager") {
+  if (!isManagerRole(user?.role)) {
     return (
       <div className="page-shell">
         <section className="page-section">
@@ -246,6 +256,10 @@ export default function ContractCreatePage() {
     e.preventDefault();
     if (loading || editLoading) return;
     setError(null);
+    if (!hasIdentityDetails) {
+      redirectToKyc();
+      return;
+    }
 
     // Basic field validation
     if (
@@ -378,6 +392,10 @@ export default function ContractCreatePage() {
     e.preventDefault();
     if (loading) return;
     setError(null);
+    if (!hasIdentityDetails) {
+      redirectToKyc();
+      return;
+    }
     setLoading(true);
     try {
       // Basic validation (same as handleSubmit)
@@ -502,6 +520,15 @@ export default function ContractCreatePage() {
       {editLoading && (
         <div style={{ marginBottom: "24px", color: "#555", fontSize: "14px" }}>
           Loading contract...
+        </div>
+      )}
+
+      {!hasIdentityDetails && (
+        <div className="security-notice" style={{ marginBottom: "24px" }}>
+          <span className="notice-icon">KYC</span>
+          <p>
+            Complete your identity details in <strong>Profile</strong> before creating, editing, or funding contracts.
+          </p>
         </div>
       )}
 

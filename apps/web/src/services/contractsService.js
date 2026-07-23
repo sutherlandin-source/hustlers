@@ -14,7 +14,16 @@ export const contractsService = {
   async get(contractId) {
     try {
       const res = await axiosInstance.get(`/contracts/${contractId}`);
-      return res.data.data.contract || res.data.data;
+      const payload = res.data.data || {};
+      if (payload.contract && typeof payload.contract === "object") {
+        const { contract, ...rest } = payload;
+        return {
+          ...contract,
+          ...rest,
+          userDisputeId: rest.userDisputeId || contract.userDisputeId || null,
+        };
+      }
+      return payload;
     } catch (err) {
       throw handleApiError(err);
     }

@@ -105,7 +105,7 @@ export async function deleteContract(req, res, next) {
 export async function getContract(req, res, next) {
   try {
     const { id } = req.params;
-    const contract = await contractService.getContract(id);
+    const contract = await contractService.getContract(id, req.user?.userId);
     return buildResponse(res, 200, "Contract retrieved", { contract });
   } catch (err) {
     next(err);
@@ -118,8 +118,46 @@ export async function listContracts(req, res, next) {
     if (req.query.sellerId) filter.seller = req.query.sellerId;
     if (req.query.buyerId) filter.buyer = req.query.buyerId;
     if (req.query.status) filter.status = req.query.status;
-    const options = { limit: parseInt(req.query.limit) || 20, skip: parseInt(req.query.skip) || 0 };
-    const contracts = await contractService.listContracts(filter, options);
+
+    // sellerOnly=true → scope to contracts where the calling hustler is the seller
+    // OR has an accepted application (multi-worker contracts)
+    if (req.query.sellerOnly === "true" && req.user?.userId) {
+      const hustlerId = req.user.userId;
+
+      // Fetch contract IDs from accepted applications for this hustler
+      let acceptedContractIds = [];
+      try {
+        const ContractApplication = (await import("../applications/model.js")).default;
+        const acceptedApps = await ContractApplication.find({
+          hustlerId,
+          status: { $in: ["accepted", "approved", "active", "in_progress"] },
+        }).select("contractId").lean();
+        acceptedContractIds = acceptedApps.map((app) => String(app.contractId)).filter(Boolean);
+      } catch (_) {
+        // non-fatal — fall back to seller-only filter
+      }
+
+      if (acceptedContractIds.length > 0) {
+        // Combine: seller match OR accepted application
+        filter.$or = [
+          { seller: hustlerId },
+          { _id: { $in: acceptedContractIds } },
+        ];
+      } else {
+        filter.seller = hustlerId;
+      }
+    }
+
+    const options = {
+      limit: parseInt(req.query.limit) || 20,
+      skip: parseInt(req.query.skip) || 0,
+      sortBy: req.query.sortBy,
+      minRating: req.query.minRating,
+      verified: req.query.verified,
+      verifiedUsers: req.query.verifiedUsers,
+      skills: req.query.skills,
+    };
+    const contracts = await contractService.listContracts(filter, options, req.user?.userId);
     return buildResponse(res, 200, "Contracts list", { contracts });
   } catch (err) {
     next(err);
@@ -130,8 +168,16 @@ export async function listMyContracts(req, res, next) {
   try {
     const filter = { appliedBy: req.user?.userId };
     if (req.query.status) filter.status = req.query.status;
-    const options = { limit: parseInt(req.query.limit) || 20, skip: parseInt(req.query.skip) || 0 };
-    const contracts = await contractService.listContracts(filter, options);
+    const options = {
+      limit: parseInt(req.query.limit) || 20,
+      skip: parseInt(req.query.skip) || 0,
+      sortBy: req.query.sortBy,
+      minRating: req.query.minRating,
+      verified: req.query.verified,
+      verifiedUsers: req.query.verifiedUsers,
+      skills: req.query.skills,
+    };
+    const contracts = await contractService.listContracts(filter, options, req.user?.userId);
     return buildResponse(res, 200, "My applied contracts", { contracts });
   } catch (err) {
     next(err);

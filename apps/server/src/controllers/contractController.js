@@ -1,5 +1,6 @@
 import { contractService } from "../services/contractService.js";
 import { SUCCESS_MESSAGES } from "../config/constants.js";
+import { isHustlerRole } from "../shared/utils/roles.js";
 
 function buildResponse(res, status, message, data = {}) {
   return res.status(status).json({ success: status >= 200 && status < 300, message, data, timestamp: new Date().toISOString() });
@@ -67,7 +68,7 @@ export async function listContracts(req, res, next) {
     if (req.query.status) filter.status = req.query.status;
     
     // If no filters provided and user is a hustler, show available contracts (unassigned contracts posted by managers)
-    if (Object.keys(filter).length === 0 && userRole === "hustler") {
+    if (Object.keys(filter).length === 0 && isHustlerRole(userRole)) {
       // Show contracts that have no seller assigned (unassigned) and are in pending state
       filter.$or = [
         { seller: null },

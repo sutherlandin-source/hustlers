@@ -210,6 +210,8 @@ const contractSchema = new Schema(
 );
 
 contractSchema.index({ seller: 1, buyer: 1, status: 1 });
+contractSchema.index({ status: 1, createdAt: -1 });
+contractSchema.index({ buyer: 1, createdAt: -1 });
 
 contractSchema.pre("validate", function normalizeLegacyFields(next) {
   this.escrowStatus = normalizeEscrowStatus(this.escrowStatus);

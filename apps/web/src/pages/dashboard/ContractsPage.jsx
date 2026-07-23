@@ -1,94 +1,203 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext.jsx";
 import Loader from "../../components/Loader.jsx";
 import ErrorBanner from "../../components/ErrorBanner.jsx";
 import { contractsService } from "../../services/contractsService.js";
-import { conversationsService } from "../../services/conversationsService.js";
+import { ContractApplicationsService } from "../../services/contractApplicationsService.js";
+import { milestonesService } from "../../services/milestonesService.js";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const STATUS_FILTERS = [
+  { key: "all",         label: "All"         },
+  { key: "active",      label: "Active"      },
+  { key: "in_progress", label: "In Progress" },
+  { key: "submitted",   label: "Submitted"   },
+  { key: "approved",    label: "Approved"    },
+  { key: "rejected",    label: "Rejected"    },
+  { key: "completed",   label: "Completed"   },
+];
+
+const SORT_OPTIONS = [
+  { key: "newest",      label: "Newest first"       },
+  { key: "oldest",      label: "Oldest first"       },
+  { key: "amount_desc", label: "Budget: high → low" },
+  { key: "amount_asc",  label: "Budget: low → high" },
+  { key: "title_asc",   label: "Title: A → Z"       },
+  { key: "title_desc",  label: "Title: Z → A"       },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getBadgeKey(badgeStatus) {
+  const s = String(badgeStatus || "").toLowerCase().replace(/\s+/g, "_");
+  if (["accepted", "active", "assigned"].includes(s)) return "active";
+  if (["in_progress"].includes(s)) return "in_progress";
+  if (["submitted", "work_submitted"].includes(s)) return "submitted";
+  if (["approved", "completed"].includes(s)) return "approved";
+  if (["rejected"].includes(s)) return "rejected";
+  return s;
+}
+
+function filterAndSort(cards, search, filter, sort) {
+  let result = cards;
+
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
+    result = result.filter(({ contract }) =>
+      [contract?.title, contract?.description, contract?.status]
+        .filter(Boolean).join(" ").toLowerCase().includes(q)
+    );
+  }
+
+  if (filter !== "all") {
+    result = result.filter(({ badgeStatus }) => getBadgeKey(badgeStatus) === filter);
+  }
+
+  switch (sort) {
+    case "oldest":
+      result = [...result].sort((a, b) => new Date(a.contract?.createdAt || 0) - new Date(b.contract?.createdAt || 0));
+      break;
+    case "amount_desc":
+      result = [...result].sort((a, b) => Number(b.contract?.amount || 0) - Number(a.contract?.amount || 0));
+      break;
+    case "amount_asc":
+      result = [...result].sort((a, b) => Number(a.contract?.amount || 0) - Number(b.contract?.amount || 0));
+      break;
+    case "title_asc":
+      result = [...result].sort((a, b) => String(a.contract?.title || "").localeCompare(String(b.contract?.title || "")));
+      break;
+    case "title_desc":
+      result = [...result].sort((a, b) => String(b.contract?.title || "").localeCompare(String(a.contract?.title || "")));
+      break;
+    case "newest":
+    default:
+      result = [...result].sort((a, b) => new Date(b.contract?.createdAt || 0) - new Date(a.contract?.createdAt || 0));
+  }
+
+  return result;
+}
 
 export default function ContractsPage() {
   const { user } = useAuth();
   const userId = user?._id || user?.id;
 
-  const [items, setItems] = useState([]);
+  const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
-  const [page, setPage] = useState(1);
-  const limit = 12;
-  const [hasMore, setHasMore] = useState(false);
-
-  const displayContracts = items || [];
+  const [actionError, setActionError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("newest");
 
   const isHustler = user?.role === "hustler";
-  const canAccessContractChat = (contract) => {
-    const isAssignedHustler = contract?.seller && ((contract.seller._id || contract.seller.id) === userId || contract.seller === userId);
-    const isContractBuyer = contract?.buyer && ((contract.buyer._id || contract.buyer.id) === userId || contract.buyer === userId);
-    const isManager = user?.role === "manager";
-    return Boolean(contract?.seller && (isAssignedHustler || isContractBuyer || isManager));
-  };
   const contractLinkBase = isHustler ? "/dashboard/contracts" : "/manager/contracts";
-  const navigate = useNavigate();
-  const [actionError, setActionError] = useState(null);
-  const [unreadCounts, setUnreadCounts] = useState({});
 
-  // load a page (append when page > 1)
-  const loadPage = async (pageNum = 1) => {
+  const getApplicationContract = (application) => {
+    const contractRef = application?.contract || application?.contractId;
+    return contractRef && typeof contractRef === "object" ? contractRef : null;
+  };
+
+  const getApplicationContractId = (application) => {
+    const contractRef = application?.contractId || application?.contract;
+    return contractRef?._id || contractRef;
+  };
+
+  const getApplicationStatus = (application) => application?.status || "pending";
+
+  const getMilestones = (contract) => (Array.isArray(contract?.milestones) ? contract.milestones : []);
+
+  const getLatestMilestoneForUser = (contract, targetUserId) => {
+    const normalizedUserId = String(targetUserId || "");
+    if (!normalizedUserId) return null;
+
+    return [...getMilestones(contract)]
+      .filter((milestone) => {
+        const assignedTo = milestone?.assignedTo?._id || milestone?.assignedTo?.id || milestone?.assignedTo;
+        const submittedBy = milestone?.submittedBy?._id || milestone?.submittedBy?.id || milestone?.submittedBy;
+        return String(assignedTo || submittedBy || "") === normalizedUserId;
+      })
+      .sort((left, right) => new Date(right.updatedAt || right.createdAt || 0) - new Date(left.updatedAt || left.createdAt || 0))[0] || null;
+  };
+
+  const getPersonalContractBadge = (milestone, applicationStatus) => {
+    if (!milestone) {
+      return applicationStatus === "accepted" ? "Accepted" : applicationStatus;
+    }
+
+    const workStatus = String(milestone?.workStatus || milestone?.status || "").toLowerCase();
+    const paymentStatus = String(milestone?.paymentStatus || "").toLowerCase();
+
+    if (paymentStatus === "refunded") return "Refunded to Manager";
+    if (workStatus === "rejected") return "Rejected";
+    if (workStatus === "approved" && paymentStatus === "released") return "Completed";
+    if (workStatus === "approved") return "Approved";
+    if (["submitted", "work_submitted"].includes(workStatus)) return "Submitted";
+    if (workStatus === "in_progress") return "In Progress";
+    return applicationStatus === "accepted" ? "Accepted" : applicationStatus;
+  };
+
+  const loadApplications = async () => {
     try {
-      if (pageNum === 1) {
-        setLoading(true);
-        setError(null);
-      } else {
-        setLoadingMore(true);
-      }
+      setLoading(true);
+      setError(null);
 
-      const skip = (pageNum - 1) * limit;
-      const query = user?.role === "hustler" ? { limit, skip } : { buyerId: userId, limit, skip };
-      const result = await contractsService.list(query);
+      const response = await ContractApplicationsService.getMyApplications();
+      const records = Array.isArray(response?.data) ? response.data : [];
+      const resolved = await Promise.all(
+        records
+          .filter((application) => String(application.status || "").toLowerCase() !== "cancelled")
+          .map(async (application) => {
+            const contractRef = application?.contractId || application?.contract;
+            if (contractRef) {
+              try {
+                const contractId = contractRef?._id || contractRef;
+                const contract = await contractsService.get(contractId);
+                return { ...application, contract: contractRef && typeof contractRef === "object" ? { ...contractRef, ...contract } : contract };
+              } catch {
+                return contractRef && typeof contractRef === "object" ? { ...application, contract: contractRef } : application;
+              }
+            }
+            return application;
+          })
+      );
 
-      if (pageNum === 1) setItems(result || []);
-      else setItems((prev) => [...(prev || []), ...(result || [])]);
-
-      setHasMore((result || []).length === limit);
+      setApplications(resolved);
     } catch (err) {
       setError(err);
     } finally {
       setLoading(false);
-      setLoadingMore(false);
+    }
+  };
+
+  const loadMilestones = async () => {
+    try {
+    } catch {
     }
   };
 
   useEffect(() => {
     if (!userId) return;
-    setPage(1);
-    loadPage(1);
+    loadApplications();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, user?.role]);
 
-  // Fetch unread counts for visible contracts that the user can access
-  useEffect(() => {
-    let mounted = true;
-    const fetchUnread = async () => {
-      const map = {};
-      const toCheck = (displayContracts || []).filter((c) => canAccessContractChat(c));
-      await Promise.all(
-        toCheck.map(async (c) => {
-          try {
-            const cnt = await conversationsService.getUnreadForContract(c._id || c.id);
-            if (mounted) map[c._id || c.id] = cnt || 0;
-          } catch (e) {
-            // ignore
-          }
-        })
-      );
-      if (mounted) setUnreadCounts(map);
-    };
+  const applicationCards = useMemo(() => {
+    const all = applications
+      .map((application) => {
+        const contract = getApplicationContract(application);
+        const contractId = getApplicationContractId(application);
+        if (!contractId) return null;
+        const status = getApplicationStatus(application);
+        const personalMilestone = isHustler ? getLatestMilestoneForUser(contract, userId) : null;
+        const badgeStatus = isHustler ? getPersonalContractBadge(personalMilestone, status) : status;
+        return { application, contractId, contract, badgeStatus };
+      })
+      .filter(Boolean);
 
-    if (displayContracts.length && userId) fetchUnread();
-    return () => {
-      mounted = false;
-    };
-  }, [displayContracts, userId]);
+    return filterAndSort(all, search, filter, sortBy);
+  }, [applications, search, filter, sortBy, isHustler, userId]);
 
   const getStatusColor = (status) => {
     const statusColors = {
@@ -97,59 +206,36 @@ export default function ContractsPage() {
       completed: "#0ea5e9",
       cancelled: "#6b7280",
       disputed: "#ef4444",
+      refunded: "#6b7280",
       terminated: "#8b5cf6",
+      accepted: "#10b981",
+      approved: "#10b981",
+      rejected: "#ef4444",
+      in_progress: "#0ea5e9",
+      submitted: "#8b5cf6",
+      approved: "#10b981",
     };
-    return statusColors[status] || "#6b7280";
+    return statusColors[String(status || "").toLowerCase()] || "#6b7280";
   };
 
   const computeProgress = (contract) => {
     const milestones = contract?.milestones || [];
     if (!milestones.length) return null;
-    const completed = milestones.filter((m) => m.workStatus === "completed" || m.workStatus === "approved" || m.status === "completed").length;
+    const completed = milestones.filter((milestone) => milestone.workStatus === "completed" || milestone.workStatus === "approved" || milestone.status === "completed").length;
     const percent = Math.round((completed / milestones.length) * 100);
     return { total: milestones.length, completed, percent };
   };
-  const loadMore = async () => {
-    const next = page + 1;
-    setPage(next);
-    await loadPage(next);
-  };
 
-  const handleOpenChat = async (event, contractId) => {
-    event.stopPropagation();
-    event.preventDefault();
-    setActionError(null);
-
-    try {
-      const conversation = await conversationsService.openForContract(contractId);
-      const conversationId = conversation._id || conversation.id;
-      if (conversationId) {
-        const chatBase = user?.role === "admin" ? "/admin" : user?.role === "manager" ? "/manager" : "/dashboard";
-        navigate(`${chatBase}/chat/${conversationId}`);
-      }
-    } catch (err) {
-      setActionError(err?.message || "Unable to open chat for this contract.");
-    }
-  };
+  if (loading) return <Loader />;
 
   return (
     <section className="page-section">
       <header className="page-header">
         <div>
-          <h2>{isHustler ? "Available Jobs" : "My Contracts"}</h2>
-          <p>
-            {isHustler
-              ? "Browse available jobs posted by managers and apply to work."
-              : "Review contracts assigned to you as a Hustler."}
-          </p>
+          <h2>My Contracts</h2>
+          <p>{isHustler ? "Contracts you have applied for." : "Review contracts assigned to you as a Hustler."}</p>
         </div>
       </header>
-
-      {loading && (
-        <div className="contracts-loading">
-          <Loader label="Loading contracts..." />
-        </div>
-      )}
 
       {error && (
         <div className="contracts-error">
@@ -162,130 +248,132 @@ export default function ContractsPage() {
         </div>
       )}
 
-      {!loading && !error && (
+      {!error && (
         <>
-          {displayContracts.length ? (
-            <>
-              <div className="load-more-bar">
-                <div className="load-info">Showing {displayContracts.length} items</div>
-                <button className="btn-ghost" onClick={loadMore} disabled={!hasMore || loadingMore}>
-                  {loadingMore ? "Loading..." : hasMore ? "Load more" : "No more"}
-                </button>
-              </div>
-
-              <div className="contracts-grid">
-                {displayContracts.map((c) => (
-                  <Link
-                    key={c._id || c.id}
-                    to={`${contractLinkBase}/${c._id || c.id}`}
-                    className="contract-card"
+          {/* Toolbar */}
+          {applicationCards.length > 0 || search || filter !== "all" ? (
+            <div className="contracts-toolbar" style={{ flexWrap: "wrap", gap: 10 }}>
+              {/* Status filter pills */}
+              <div className="contracts-filter-bar" role="tablist" aria-label="Contract filters" style={{ flexWrap: "wrap" }}>
+                {STATUS_FILTERS.map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    className={`contracts-filter ${filter === f.key ? "active" : ""}`}
+                    onClick={() => setFilter(f.key)}
+                    aria-pressed={filter === f.key}
                   >
-                    <div className="contract-card-header">
-                      <h3 className="contract-title">{c.title || "Untitled job"}</h3>
-                      <span 
-                        className="status-badge" 
-                        style={{ backgroundColor: getStatusColor(c.status) }}
-                      >
-                        {c.status}
-                      </span>
-                    </div>
-
-                    <p className="contract-description">{c.description || "No description"}</p>
-
-                    <div className="contract-meta-tags">
-                      {isHustler && c.jobCategory && (
-                        <span className="meta-tag category-tag">
-                          <span className="tag-icon">🏷️</span>
-                          {c.jobCategory}
-                        </span>
-                      )}
-                      {isHustler && c.workLocation && (
-                        <span className="meta-tag location-tag">
-                          <span className="tag-icon">📍</span>
-                          {c.workLocation}
-                        </span>
-                      )}
-                      {!isHustler && c.buyer && (
-                        <span className="meta-tag user-tag">
-                          <span className="tag-icon">👤</span>
-                          {c.buyer?.firstName ? `${c.buyer.firstName} ${c.buyer.lastName}` : c.buyer?.name || "—"}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="contract-footer">
-                      <div style={{display: 'flex', alignItems: 'center', gap:12}}>
-                        <div className="amount-badge">
-                          <span className="currency-icon">💰</span>
-                          <strong>{c.amount ?? "—"}</strong>
-                          <span className="currency">{c.currency || "KES"}</span>
-                        </div>
-
-                        {c.seller && (
-                          <div className="assigned-hustler">
-                            <div className="hustler-avatar">
-                              {c.seller?.avatar ? (
-                                <img src={c.seller.avatar} alt={c.seller?.firstName || "hustler"} />
-                              ) : (
-                                <div className="hustler-initials">{(c.seller?.firstName || "").charAt(0)}</div>
-                              )}
-                            </div>
-                            <div className="hustler-name">{c.seller?.firstName ? `${c.seller.firstName} ${c.seller.lastName || ''}` : c.seller?.name || '—'}</div>
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{display: 'flex', alignItems: 'center', gap:12}}>
-                        {(() => {
-                          const prog = computeProgress(c);
-                          if (!prog) return <div className="view-details">View Details →</div>;
-                          return (
-                            <div className="contract-progress">
-                              <div className="progress-label">{prog.percent}%</div>
-                              <div className="progress-bar">
-                                <div className="progress-fill" style={{ width: `${prog.percent}%` }} />
-                              </div>
-                            </div>
-                          );
-                        })()}
-
-                        <div className="contract-actions" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                          <div className="view-details">View Details →</div>
-                          {c.status === "approved" && canAccessContractChat(c) && (
-                            <button
-                              className="button-secondary"
-                              type="button"
-                              onClick={(event) => handleOpenChat(event, c._id || c.id)}
-                            >
-                              Messages
-                              {unreadCounts[c._id || c.id] > 0 && (
-                                <span className="unread-badge" style={{ marginLeft: 8 }}>{unreadCounts[c._id || c.id]}</span>
-                              )}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </Link>
+                    {f.label}
+                  </button>
                 ))}
               </div>
 
-              {displayContracts.length > 0 && (
-                <div className="pagination-row" style={{ marginTop: 20 }}>
-                  <button className="btn-ghost" onClick={loadMore} disabled={!hasMore || loadingMore}>
-                    {loadingMore ? "Loading..." : hasMore ? "Load more" : "No more"}
-                  </button>
-                </div>
-              )}
-            </>
+              {/* Search + sort */}
+              <div className="contracts-toolbar-actions">
+                <label className="contracts-search">
+                  <svg viewBox="0 0 20 20" aria-hidden="true" style={{ width: 16, height: 16 }}>
+                    <path d="M13.3 12.1 16.6 15.4l-1.2 1.2-3.3-3.3a6 6 0 1 1 1.2-1.2zM8.5 13a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z" />
+                  </svg>
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search contracts…"
+                    aria-label="Search contracts"
+                  />
+                </label>
+
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  aria-label="Sort contracts"
+                  style={{
+                    border: "1px solid #E2E8F0",
+                    borderRadius: 8,
+                    padding: "7px 12px",
+                    fontSize: "0.875rem",
+                    fontWeight: 600,
+                    color: "#0F172A",
+                    background: "#fff",
+                    cursor: "pointer",
+                    outline: "none",
+                  }}
+                >
+                  {SORT_OPTIONS.map((opt) => (
+                    <option key={opt.key} value={opt.key}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : null}
+
+          {applicationCards.length ? (
+            <div className="contracts-grid">
+              {applicationCards.map(({ application, contract, contractId, badgeStatus }) => {
+                if (!contract) return null;
+
+                const progress = computeProgress(contract);
+
+                return (
+                  <div key={application._id || contractId} className="contract-card">
+                    <div className="contract-card-header">
+                      <div className="contract-card-heading">
+                        <div className="contract-card-label">Job</div>
+                        <h3 className="contract-title">{contract.title || "Untitled job"}</h3>
+                      </div>
+                      <span className="status-badge" style={{ backgroundColor: getStatusColor(badgeStatus) }}>
+                        {String(badgeStatus || "pending").replace(/_/g, " ")}
+                      </span>
+                    </div>
+
+                    <p className="contract-description">{contract.description || "No description"}</p>
+
+                    <div className="contract-footer">
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div className="amount-badge">
+                          <span className="currency-icon">$</span>
+                          <strong>{contract.amount ?? "-"}</strong>
+                          <span className="currency">{contract.currency || "KES"}</span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        {progress ? (
+                          <div className="contract-progress">
+                            <div className="progress-label">
+                              <span className="contract-detail-label">Progress</span>
+                              <strong className="contract-detail-value">{progress.percent}%</strong>
+                            </div>
+                            <div className="progress-bar">
+                              <div className="progress-fill" style={{ width: `${progress.percent}%` }} />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="view-details">
+                            <span className="contract-detail-label">Status</span>
+                            <strong className="contract-detail-value">Applied</strong>
+                          </div>
+                        )}
+
+                        <div className="contract-actions" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <Link to={`${contractLinkBase}/${contractId}`} className="view-details view-details-link">
+                            View Details
+                          </Link>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           ) : (
             <div className="empty-state">
-              <div className="empty-state-icon">📭</div>
-              <h3>{isHustler ? "No available jobs" : "No contracts created"}</h3>
+              <div className="empty-state-icon">No contracts</div>
+              <h3>{search || filter !== "all" ? "No matching contracts" : isHustler ? "No contracts yet" : "No contracts assigned"}</h3>
               <p>
-                {isHustler
-                  ? "Check back soon for new job opportunities."
-                  : "Create your first contract to get started."}
+                {search || filter !== "all"
+                  ? "Try adjusting your search or filter."
+                  : isHustler ? "Apply to a contract to see it here." : "Assigned contracts will appear here."}
               </p>
             </div>
           )}
