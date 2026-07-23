@@ -4,6 +4,6 @@
     "slug": "hustlers-mobile",
     "platforms": ["ios", "android", "web"],
     "version": "1.0.0",
-    "sdkVersion": "49.0.0"
+    "sdkVersion": "54.0.0"
   }
 }
