@@ -8,6 +8,7 @@ import {
   getConversationById,
   createConversation,
   openConversationForContract,
+  openSupportConversation,
 } from "./service.js";
 import { markMessagesRead, getUnreadCountForConversation } from "../messages/service.js";
 import { HTTP_STATUS, SUCCESS_MESSAGES } from "../../shared/config/constants.js";
@@ -65,6 +66,15 @@ export async function openContractConversation(req, res, next) {
       console.error("Failed to mark messages read:", e?.message || e);
     }
     return buildResponse(res, HTTP_STATUS.OK, "Conversation opened", { conversation });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function openSupportTicket(req, res, next) {
+  try {
+    const conversation = await openSupportConversation(req.user);
+    return buildResponse(res, HTTP_STATUS.OK, "Support ticket opened", { conversation });
   } catch (err) {
     next(err);
   }

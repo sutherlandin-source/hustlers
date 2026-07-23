@@ -16,7 +16,8 @@ router.post(
   "/",
   validate([
     { field: "conversationId", type: "string", required: true },
-    { field: "text", type: "string", required: true, minLength: 1 },
+    { field: "text", type: "string", required: false },
+    { field: "attachments", type: "array", required: false },
   ]),
   postMessage
 );

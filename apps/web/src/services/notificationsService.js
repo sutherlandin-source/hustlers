@@ -4,7 +4,17 @@ export const notificationsService = {
   async list(query = {}) {
     try {
       const res = await axiosInstance.get("/notifications", { params: query });
-      return res.data?.data || res.data;
+      const payload = res.data?.data ?? res.data;
+      const nested = payload?.data ?? payload;
+      const notifications = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload.notifications)
+        ? payload.notifications
+        : Array.isArray(nested.notifications)
+        ? nested.notifications
+        : [];
+      const unreadCount = Number(payload?.unreadCount ?? nested?.unreadCount ?? 0);
+      return { notifications, unreadCount };
     } catch (err) {
       throw handleApiError(err);
     }

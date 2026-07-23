@@ -69,10 +69,10 @@ export function initializeSocketServer(io) {
       }
     });
 
-    socket.on("send_message", async ({ conversationId, text }) => {
+    socket.on("send_message", async ({ conversationId, text, attachments }) => {
       try {
         const userId = socket.data.user?.userId;
-        const message = await createMessage({ conversationId, text }, userId);
+        const message = await createMessage({ conversationId, text, attachments }, userId);
 
         // populate sender info for socket clients and notifications
         const populated = await Message.findById(message._id)
@@ -100,7 +100,7 @@ export function initializeSocketServer(io) {
                 senderId: senderIdStr,
                 senderName,
                 title: `New message from ${senderName}`,
-                body: (populated?.text || "").slice(0, 200),
+                body: (populated?.text || (populated?.attachments?.length ? "Sent an attachment" : "")).slice(0, 200),
                 read: false,
               };
               io.to(`user:${pid}`).emit("notification", payload);

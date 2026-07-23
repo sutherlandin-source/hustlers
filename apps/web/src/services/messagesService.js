@@ -10,9 +10,9 @@ export const messagesService = {
     }
   },
 
-  async create(conversationId, text) {
+  async create(conversationId, text, attachments = []) {
     try {
-      const res = await axiosInstance.post("/messages", { conversationId, text });
+      const res = await axiosInstance.post("/messages", { conversationId, text, attachments });
       return res.data.data.message;
     } catch (err) {
       throw handleApiError(err);
