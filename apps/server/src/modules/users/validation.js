@@ -9,6 +9,9 @@ export const userValidation = {
   updateProfile: [
     { field: "email", type: "email", required: false },
     { field: "phoneNumber", type: "string", required: false, pattern: VALIDATION_PATTERNS.KENYA_PHONE },
+    { field: "role", type: "string", required: false },
+    { field: "idNumber", type: "string", required: false, minLength: 4 },
+    { field: "mpesaNumber", type: "string", required: false, pattern: VALIDATION_PATTERNS.KENYA_PHONE },
     { field: "bio", type: "string", required: false, minLength: 10, maxLength: 500 },
     { field: "location", type: "string", required: false, minLength: 2 },
     { field: "companyName", type: "string", required: false },
