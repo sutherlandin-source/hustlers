@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useAuth } from "../../contexts/AuthContext.jsx";
 import { useDataStore } from "../../state/useDataStore.js";
 import Loader from "../../components/Loader.jsx";
+import ProfileCompletionCard from "../../components/ProfileCompletionCard.jsx";
 
 function formatCurrency(amount, currency = "KSH") {
   return new Intl.NumberFormat("en-US", {
@@ -53,6 +54,8 @@ export default function OverviewPage() {
           <p>See your assigned contracts, active milestones, and earnings at a glance.</p>
         </div>
       </header>
+
+      <ProfileCompletionCard user={user} />
 
       <div className="grid-grid">
         <article className="card card-highlight">

@@ -3,11 +3,11 @@ import { useAuth } from "../contexts/AuthContext.jsx";
 import "../styles/home.css";
 
 export default function HomePage() {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
 
   // Redirect authenticated users to their dashboard
   if (isAuthenticated) {
-    return <Navigate to={user?.role === "manager" ? "/manager" : "/dashboard"} replace />;
+    return <Navigate to="/app" replace />;
   }
 
   const features = [

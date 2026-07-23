@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { notificationsService } from "../services/notificationsService.js";
 
 let nextId = 1;
+let _pollingInterval = null;
 
 const useNotificationStore = create((set) => ({
   toasts: [],
@@ -27,20 +28,13 @@ const useNotificationStore = create((set) => ({
       const data = await notificationsService.list({ limit: 20, ...query });
       set((prev) => {
         const prevNotifications = prev.notifications || [];
-        // preserve local temporary notifications (ids that start with 'local-')
         const localTemp = prevNotifications.filter((n) => String(n._id || n.id).startsWith("local-"));
-        const fetched = Array.isArray(data) ? data : data.notifications || [];
-        const fetchedIds = new Set(fetched.map((f) => String(f._id || f.id)));
-        const merged = [...localTemp, ...fetched.filter((f) => !fetchedIds.has(String(f._id || f.id)))];
-        // avoid dropping a recently incremented unread count from optimistic updates
-        const serverUnread = data?.unreadCount || 0;
+        const fetched = Array.isArray(data.notifications) ? data.notifications : [];
+        const localIds = new Set(localTemp.map((n) => String(n._id || n.id)));
+        const merged = [...localTemp, ...fetched.filter((f) => !localIds.has(String(f._id || f.id)))];
+        const serverUnread = Number(data.unreadCount || 0);
         const unreadCount = Math.max(serverUnread, prev.unreadCount || 0);
-        return {
-          notifications: merged,
-          unreadCount,
-          loading: false,
-          error: null,
-        };
+        return { notifications: merged, unreadCount, loading: false, error: null };
       });
     } catch (err) {
       console.error("Failed to load notifications:", err);
@@ -55,6 +49,21 @@ const useNotificationStore = create((set) => ({
       // Keep notification polling quiet; API errors are shown when the panel opens.
     }
   },
+  // Start background polling of the unread count every 30 seconds.
+  // Safe to call multiple times — only one interval runs at a time.
+  startPolling: () => {
+    if (_pollingInterval) return;
+    const { fetchUnreadCount } = useNotificationStore.getState();
+    _pollingInterval = setInterval(() => {
+      useNotificationStore.getState().fetchUnreadCount();
+    }, 30_000);
+  },
+  stopPolling: () => {
+    if (_pollingInterval) {
+      clearInterval(_pollingInterval);
+      _pollingInterval = null;
+    }
+  },
   markRead: async (notificationId) => {
     const updated = await notificationsService.markRead(notificationId);
     set((state) => ({
@@ -65,10 +74,7 @@ const useNotificationStore = create((set) => ({
   },
   markAllRead: async () => {
     const data = await notificationsService.markAllRead();
-    set({
-      notifications: data.notifications || [],
-      unreadCount: data.unreadCount || 0,
-    });
+    set({ notifications: data.notifications || [], unreadCount: data.unreadCount || 0 });
   },
   archiveNotification: async (notificationId) => {
     await notificationsService.archive(notificationId);

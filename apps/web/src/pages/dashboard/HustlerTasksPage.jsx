@@ -7,12 +7,14 @@ import { contractsService } from "../../services/contractsService.js";
 import { ContractApplicationsService } from "../../services/contractApplicationsService.js";
 import Loader from "../../components/Loader.jsx";
 import ErrorBanner from "../../components/ErrorBanner.jsx";
+import { Link } from "react-router-dom";
 
 const WORK_STATUS = {
   NOT_STARTED: "not_started",
   IN_PROGRESS: "in_progress",
   WORK_SUBMITTED: "work_submitted",
   NEEDS_REVISION: "needs_revision",
+  REJECTED: "rejected",
   APPROVED: "approved",
 };
 
@@ -35,7 +37,19 @@ function getModifiedTime(item) {
   return new Date(item?.updatedAt || item?.submittedAt || item?.createdAt || item?.appliedAt || 0).getTime();
 }
 
-function formatEscrowStatus(status) {
+function isContractFinalized(contract) {
+  const metadata = contract?.metadata || {};
+  return Boolean(
+    contract?.status === "completed" ||
+      contract?.completedAt ||
+      contract?.finalApprovedAt ||
+      metadata?.disputePaymentReleasedAt ||
+      metadata?.disputeOutcome === "release_full_payment"
+  );
+}
+
+function formatEscrowStatus(contractOrStatus) {
+  const status = typeof contractOrStatus === "object" ? (isContractFinalized(contractOrStatus) ? "released" : contractOrStatus?.escrowStatus) : contractOrStatus;
   const labels = {
     waiting_for_funding: "Waiting For Manager Funding",
     funded: "Payment Secured",
@@ -61,7 +75,63 @@ function hasSecuredOrReleasedEscrow(contract) {
 function needsRevision(milestone) {
   const workStatus = (milestone?.workStatus || "").toLowerCase();
   const status = (milestone?.status || "").toLowerCase();
-  return workStatus === WORK_STATUS.NEEDS_REVISION || status === "rejected";
+  return workStatus === WORK_STATUS.NEEDS_REVISION || status === "needs_revision";
+}
+
+function isRejectedWork(milestone) {
+  const workStatus = String(milestone?.workStatus || "").toLowerCase();
+  const status = String(milestone?.status || "").toLowerCase();
+  return workStatus === WORK_STATUS.REJECTED || status === "rejected";
+}
+
+function getWorkStatusLabel(milestone) {
+  const workStatus = String(milestone?.workStatus || "").toLowerCase();
+  const status = String(milestone?.status || "").toLowerCase();
+  if (workStatus === WORK_STATUS.REJECTED || status === WORK_STATUS.REJECTED) return "Rejected";
+  if (workStatus === WORK_STATUS.APPROVED) return "Completed";
+  if (workStatus === WORK_STATUS.WORK_SUBMITTED) return "Awaiting Approval";
+  if (workStatus === WORK_STATUS.IN_PROGRESS) return "In Progress";
+  if (workStatus === WORK_STATUS.NEEDS_REVISION) return "Revision Requested";
+  return "Assigned";
+}
+
+function getPaymentStatusLabel(milestone) {
+  const paymentStatus = String(milestone?.paymentStatus || "").toLowerCase();
+  if (paymentStatus === "released") return "Payment Released";
+  if (paymentStatus === "refunded") return "Refunded to Manager";
+  const contractStatus = String(milestone?.contract?.status || "").toLowerCase();
+  const disputeId = milestone?.contract?.userDisputeId || milestone?.contract?.metadata?.userDisputeId || milestone?.contract?.metadata?.disputeId || milestone?.contract?.disputeId || milestone?.paymentMetadata?.disputeId;
+  if (paymentStatus === "pending" && (contractStatus === "disputed" || Boolean(disputeId))) return "Payment On Hold";
+  return "Payment Secured";
+}
+
+function getWorkStatusTone(milestone) {
+  const workStatus = String(milestone?.workStatus || "").toLowerCase();
+  const status = String(milestone?.status || "").toLowerCase();
+  if (workStatus === WORK_STATUS.REJECTED || status === WORK_STATUS.REJECTED) return "status-cancelled";
+  if (workStatus === WORK_STATUS.APPROVED) return "status-active";
+  if (workStatus === WORK_STATUS.NEEDS_REVISION) return "status-cancelled";
+  if (workStatus === WORK_STATUS.WORK_SUBMITTED) return "status-submitted";
+  if (workStatus === WORK_STATUS.IN_PROGRESS) return "status-active";
+  return "status-submitted";
+}
+
+function getPaymentStatusTone(milestone) {
+  const label = getPaymentStatusLabel(milestone);
+  if (label === "Payment Released") return "status-active";
+  if (label === "Refunded to Manager") return "status-cancelled";
+  if (label === "Payment On Hold") return "status-cancelled";
+  return "status-submitted";
+}
+
+function getApplicationContract(app) {
+  const populated = app?.contract || app?.contractId;
+  return populated && typeof populated === "object" ? populated : null;
+}
+
+function getApplicationContractId(app) {
+  const contract = getApplicationContract(app);
+  return contract?._id || contract?.id || app?.contractId || app?.contract;
 }
 
 export default function HustlerTasksPage() {
@@ -124,16 +194,18 @@ export default function HustlerTasksPage() {
 
         // fetch milestones for contracts from accepted applications
         for (const app of acceptedApps) {
-          const contractId = app.contract?._id || app.contractId || app.contract;
+          const contractObj = getApplicationContract(app);
+          const contractId = getApplicationContractId(app);
           if (!contractId) continue;
           try {
-            const contractMilestones = await milestonesService.list({ contractId });
+            const contractMilestones = await milestonesService.list({ contractId, sellerOnly: true });
             for (const m of (contractMilestones || [])) {
               if (!merged.find((x) => (x._id || x.id) === (m._id || m.id))) {
                 // attach contract reference so UI groups correctly
-                m.contract = app.contract || { _id: contractId, title: app.contractTitle || app.contract?.title };
-                // mark the contract's seller as this hustler so the existing assignedTasks filter includes it
-                if (!m.contract.seller) m.contract.seller = { _id: userId };
+                m.contract = { ...(m.contract || {}), ...(contractObj || { _id: contractId, title: app.contractTitle }) };
+                // Multi-worker contracts keep the first accepted hustler in contract.seller for legacy flows.
+                // Accepted applications are the real assignment source, so mark this copy for the current hustler.
+                m.contract.seller = { _id: userId };
                 merged.push(m);
               }
             }
@@ -142,23 +214,23 @@ export default function HustlerTasksPage() {
               const placeholderId = `contract-placeholder-${contractId}`;
               if (!merged.find((x) => (x._id || x.id) === placeholderId)) {
                 // ensure we have contract details; fetch if not provided by application
-                let contractObj = app.contract || app.contractId || null;
-                if (!contractObj || !contractObj.title) {
+                let placeholderContract = contractObj || null;
+                if (!placeholderContract || !placeholderContract.title) {
                   try {
                     const fetched = await contractsService.get(contractId);
-                    contractObj = fetched.contract || fetched || { _id: contractId, title: fetched.title };
+                    placeholderContract = fetched.contract || fetched || { _id: contractId, title: fetched.title };
                   } catch (err) {
-                    contractObj = { _id: contractId, title: app.contractTitle || `Contract ${contractId}` };
+                    placeholderContract = { _id: contractId, title: app.contractTitle || `Contract ${contractId}` };
                   }
                 }
 
                 // mark seller so it appears in assignedTasks
-                if (!contractObj.seller) contractObj.seller = { _id: userId };
+                if (!placeholderContract.seller) placeholderContract.seller = { _id: userId };
 
                 merged.push({
                   _id: placeholderId,
-                  title: `No milestones yet for ${contractObj.title || 'contract'}`,
-                  contract: contractObj,
+                  title: `No milestones yet for ${placeholderContract.title || 'contract'}`,
+                  contract: placeholderContract,
                   workStatus: WORK_STATUS.NOT_STARTED,
                 });
               }
@@ -190,6 +262,7 @@ export default function HustlerTasksPage() {
     setError("");
     try {
       const task = tasks.find((t) => (t._id || t.id) === taskId);
+      const previousWorkStatus = task?.workStatus || task?.status || WORK_STATUS.NOT_STARTED;
       if (!canStartWithEscrow(task?.contract)) {
         setError("Payment is not secured yet. Please wait for the manager to fund escrow before starting work.");
         return;
@@ -213,8 +286,8 @@ export default function HustlerTasksPage() {
       } catch (apiErr) {
         console.error("Start work API failed", apiErr);
         setError(apiErr?.message || "Failed to start work");
-        // revert UI if API failed
-        setTasks((prev) => prev.map((t) => ((t._id || t.id) === taskId ? { ...t, workStatus: WORK_STATUS.NOT_STARTED } : t)));
+        // revert UI if API failed, preserving the prior state
+        setTasks((prev) => prev.map((t) => ((t._id || t.id) === taskId ? { ...t, workStatus: previousWorkStatus, status: t.status || previousWorkStatus } : t)));
         setActiveTaskId(null);
         setActiveStartTs(null);
       }
@@ -280,6 +353,9 @@ export default function HustlerTasksPage() {
   };
 
   const assignedTasks = tasks.filter((t) => {
+    const assignedTo = t.assignedTo?._id || t.assignedTo?.id || t.assignedTo;
+    if (assignedTo && String(assignedTo) === String(userId)) return true;
+
     const seller = t.contract?.seller;
     if (!seller) return false;
     const sellerId = seller._id || seller.id || seller;
@@ -336,7 +412,8 @@ export default function HustlerTasksPage() {
           const active = activeFromState || activeFromTasks;
           if (!active) return null;
           const contract = active.contract || {};
-          const statusLabel = active.workStatus === WORK_STATUS.APPROVED ? "Completed" : active.workStatus === WORK_STATUS.WORK_SUBMITTED ? "Submitted" : active.workStatus === WORK_STATUS.IN_PROGRESS ? "In Progress" : "Not Started";
+          const workStatusLabel = getWorkStatusLabel(active);
+          const paymentStatusLabel = getPaymentStatusLabel(active);
           return (
             <div className="card active-work-card">
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
@@ -351,7 +428,10 @@ export default function HustlerTasksPage() {
                     const completed = active.workStatus === WORK_STATUS.APPROVED ? 1 : 0;
                     return total ? (completed / total) * 100 : 0;
                   })()))}%</div>
-                  <div className="status-pill" style={{marginTop:6}}>{statusLabel}</div>
+                  <div style={{display:"flex",gap:6,justifyContent:"flex-end",flexWrap:"wrap",marginTop:6}}>
+                    <div className={`status-pill ${getWorkStatusTone(active)}`}>{workStatusLabel}</div>
+                    <div className={`status-pill ${getPaymentStatusTone(active)}`}>{paymentStatusLabel}</div>
+                  </div>
                 </div>
               </div>
 
@@ -447,6 +527,8 @@ export default function HustlerTasksPage() {
           <div className="contracts-task-list">
             {contractGroups.map(({ contract, milestones }) => {
               const cid = contract._id || contract.id || JSON.stringify(contract);
+              const contractDisputeId = contract?.userDisputeId || contract?.metadata?.userDisputeId || contract?.metadata?.disputeId || contract?.disputeId || "";
+              const contractDisputePath = contractDisputeId ? `/dashboard/disputes/${contractDisputeId}` : `/dashboard/contracts/${contract._id || contract.id}/dispute`;
               const total = milestones.length;
               const completed = milestones.filter((m) => m.workStatus === WORK_STATUS.APPROVED).length;
               const percent = total ? Math.round((completed / total) * 100) : 0;
@@ -454,21 +536,19 @@ export default function HustlerTasksPage() {
               const firstId = milestones[0]?._id || milestones[0]?.id || "";
               const isPlaceholder = String(firstId).startsWith("contract-placeholder-");
               // If placeholder (no milestones) derive status from contract.status
-              const statusLabel = isPlaceholder
-                ? (contract?.status && contract.status !== "pending" ? "In Progress" : "Not Started")
-                : (milestones.some(needsRevision) ? "Needs Revision" : percent === 100 ? "Completed" : hasSubmittedWork ? "Awaiting Approval" : percent === 0 ? "Not Started" : "In Progress");
-              const statusClass = isPlaceholder
-                ? (contract?.status && contract.status !== "pending" ? "in-progress" : "not-started")
-                : (milestones.some(needsRevision) ? "needs-revision" : percent === 100 ? "completed" : hasSubmittedWork ? "submitted" : percent === 0 ? "not-started" : "in-progress");
+               const hasRejectedWork = milestones.some(isRejectedWork);
+               const statusLabel = isPlaceholder
+                 ? (contract?.status && contract.status !== "pending" ? "In Progress" : "Not Started")
+                 : (hasRejectedWork ? "Rejected" : milestones.some(needsRevision) ? "Needs Revision" : percent === 100 ? "Completed" : hasSubmittedWork ? "Awaiting Approval" : percent === 0 ? "Not Started" : "In Progress");
+               const statusClass = isPlaceholder
+                 ? (contract?.status && contract.status !== "pending" ? "in-progress" : "not-started")
+                 : (hasRejectedWork ? "rejected" : milestones.some(needsRevision) ? "needs-revision" : percent === 100 ? "completed" : hasSubmittedWork ? "submitted" : percent === 0 ? "not-started" : "in-progress");
               return (
                 <div key={cid} className="contract-card task-group">
                   <div className="contract-card-header">
                     <div>
                       <h3 className="contract-title">{contract.title || "Untitled Contract"}</h3>
                       <div className="contract-sub">{contract.description || ""}</div>
-                      <div className={`status-pill ${hasSecuredOrReleasedEscrow(contract) ? "status-completed" : "status-not-started"}`} style={{marginTop:8,display:"inline-flex"}}>
-                        {formatEscrowStatus(contract.escrowStatus)}
-                      </div>
                     </div>
                     <div className="contract-meta-right">
                               <div className="contract-progress">
@@ -476,7 +556,12 @@ export default function HustlerTasksPage() {
                                 <div className="progress-text">{completed} of {total} task{total!==1? 's' : ''} completed</div>
                                 <div className={`status-pill status-${statusClass}`}>{statusLabel}</div>
                               </div>
-                      <button className="btn-ghost" onClick={() => toggleContract(cid)}>{expandedContracts[cid] ? "Collapse" : "Expand"}</button>
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                        <Link className="btn-link" to={contractDisputePath}>
+                          {contractDisputeId ? "View Dispute" : "Open Dispute"}
+                        </Link>
+                        <button className="btn-ghost" onClick={() => toggleContract(cid)}>{expandedContracts[cid] ? "Collapse" : "Expand"}</button>
+                      </div>
                     </div>
                   </div>
 
@@ -488,6 +573,9 @@ export default function HustlerTasksPage() {
                           <p>No tasks available yet</p>
                           <div className="no-tasks-actions">
                             <a className="btn-link" href={`/dashboard/contracts/${contract._id || contract.id}`}>View Job</a>
+                            <Link className="btn-link" to={contractDisputePath}>
+                              {contractDisputeId ? "View Dispute" : "Open Dispute"}
+                            </Link>
 
                           </div>
                         </div>
@@ -496,12 +584,16 @@ export default function HustlerTasksPage() {
                         <div key={m._id || m.id} className="stage-row">
                           <div className="stage-info">
                             <div className={`stage-status-dot status-${m.workStatus || 'not_started'}`} />
-                            <div className="stage-meta">
+                          <div className="stage-meta">
                               <div className="stage-title">{m.title || m.description || 'Task'}</div>
                               <div className="stage-sub muted">{m.description}</div>
                             </div>
                           </div>
                           <div className="stage-actions">
+                            <div style={{display:"flex",gap:6,justifyContent:"flex-end",flexWrap:"wrap",marginBottom:8}}>
+                              <div className={`status-pill ${getWorkStatusTone(m)}`}>{getWorkStatusLabel(m)}</div>
+                              <div className={`status-pill ${getPaymentStatusTone(m)}`}>{getPaymentStatusLabel(m)}</div>
+                            </div>
                             <a className="btn-link" href={`/dashboard/tasks/${contract._id || contract.id}/${m._id || m.id}`}>View Work Status</a>
                             {m.workStatus === WORK_STATUS.NOT_STARTED && !(String(m._id || m.id).startsWith('contract-placeholder-')) && (
                               <button className="btn-start" onClick={() => handleStartWork(m._id || m.id)} disabled={submitting || !canStartWithEscrow(m.contract || contract)}>Start Work</button>
@@ -509,7 +601,7 @@ export default function HustlerTasksPage() {
                             {m.workStatus === WORK_STATUS.IN_PROGRESS && (
                               <button className="btn-complete" onClick={() => setSelectedTask(m._id || m.id)}>Mark Complete</button>
                             )}
-                            {needsRevision(m) && (
+                            {needsRevision(m) && !isRejectedWork(m) && (
                               <>
                                 <div className="revision-note">
                                   {m.rejectionReason ? `Revision: ${m.rejectionReason}` : "Revision requested"}
@@ -517,11 +609,13 @@ export default function HustlerTasksPage() {
                                 <button className="btn-start" onClick={() => handleReviseWork(m._id || m.id)} disabled={submitting || !canStartWithEscrow(m.contract || contract)}>Revise Work</button>
                               </>
                             )}
+                            {isRejectedWork(m) && (
+                              <div className="revision-note">
+                                {m.rejectionReason ? `Rejected: ${m.rejectionReason}` : "Work rejected"}
+                              </div>
+                            )}
                             {m.workStatus === WORK_STATUS.WORK_SUBMITTED && !needsRevision(m) && (
                               <div className="stage-badge badge-submitted">Submitted for review</div>
-                            )}
-                            {m.workStatus === WORK_STATUS.APPROVED && (
-                              <div className="stage-badge badge-complete">Completed</div>
                             )}
                           </div>
                         </div>
