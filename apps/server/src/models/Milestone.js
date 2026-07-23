@@ -26,6 +26,7 @@ const milestoneSchema = new Schema(
     approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     approvedAt: { type: Date, default: null },
     rejectionReason: { type: String, trim: true },
+    rejectionComments: { type: String, trim: true, default: "" },
     revisionRequestedAt: { type: Date, default: null },
     submissionData: { type: Schema.Types.Mixed },
     completionNotes: { type: String, trim: true },

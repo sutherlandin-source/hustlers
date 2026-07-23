@@ -11,7 +11,7 @@ const conversationSchema = new Schema(
     contractId: {
       type: Schema.Types.ObjectId,
       ref: "Contract",
-      required: [true, "Contract ID is required"],
+      default: null,
     },
     participants: [
       {
@@ -20,6 +20,10 @@ const conversationSchema = new Schema(
         required: true,
       },
     ],
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
   },
   getBaseSchemaOptions()
 );

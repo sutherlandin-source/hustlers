@@ -20,9 +20,32 @@ const messageSchema = new Schema(
     },
     text: {
       type: String,
-      required: [true, "Message text is required"],
+      default: "",
       trim: true,
     },
+    attachments: [
+      {
+        name: {
+          type: String,
+          required: true,
+          trim: true,
+          maxlength: [255, "Attachment name cannot exceed 255 characters"],
+        },
+        type: {
+          type: String,
+          trim: true,
+          maxlength: [120, "Attachment type cannot exceed 120 characters"],
+        },
+        size: {
+          type: Number,
+          default: 0,
+        },
+        dataUrl: {
+          type: String,
+          required: true,
+        },
+      },
+    ],
     read: {
       type: Boolean,
       default: false,
