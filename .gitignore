@@ -1,6 +1,7 @@
 ﻿node_modules/
 .DS_Store
 /dist
+/apps/web/dist/
 /.turbo
 .env
 .env.local
