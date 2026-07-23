@@ -7,6 +7,7 @@ import ContractApplicationService from "./service.js";
 import { HTTP_STATUS, USER_ROLES } from "../../config/constants.js";
 import { ApiError } from "../../shared/middleware/errorHandler.js";
 import { env } from "../../config/env.js";
+import { isHustlerRole } from "../../shared/utils/roles.js";
 
 export class ContractApplicationController {
   /**
@@ -18,7 +19,7 @@ export class ContractApplicationController {
       const { contractId } = req.params;
       const hustlerId = req.user?.userId || req.user?._id || req.user?.id;
       // Only hustler role may apply for a contract
-      if (req.user?.role && req.user.role !== USER_ROLES.HUSTLER) {
+      if (req.user?.role && !isHustlerRole(req.user.role)) {
         throw new ApiError(HTTP_STATUS.FORBIDDEN, "Only hustlers can apply for contracts");
       }
       const { coverLetter, proposedRate, estimatedDuration, attachments } = req.body;

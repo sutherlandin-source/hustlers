@@ -6,64 +6,210 @@
 import mongoose from "mongoose";
 import ContractApplication from "./model.js";
 import { Contract } from "../contracts/model.js";
+import { Milestone } from "../milestones/model.js";
+import { User } from "../../shared/models/User.js";
 import { escrowService } from "../escrow/index.js";
 import { APPLICATION_STATUSES, HTTP_STATUS } from "../../config/constants.js";
-import { CONTRACT_STATUSES, ESCROW_STATUSES } from "../../shared/config/constants.js";
+import { CONTRACT_STATUSES, ESCROW_STATUSES, MILESTONE_STATUSES, PAYMENT_STATUSES, WORK_STATUS } from "../../shared/config/constants.js";
 import { ApiError } from "../../shared/middleware/errorHandler.js";
+import { hasApprovedIdentityVerification, requireIdentityVerification } from "../../shared/utils/identity.js";
 import { notifications } from "../../shared/utils/notifications.js";
 
+function toPlain(value) {
+  if (!value) return null;
+  return typeof value.toObject === "function" ? value.toObject() : value;
+}
+
+function sanitizePublicHustlerProfile(hustler) {
+  const user = toPlain(hustler);
+  if (!user) return null;
+
+  const firstName = String(user.firstName || "").trim();
+  const lastName = String(user.lastName || "").trim();
+  const name = [firstName, lastName].filter(Boolean).join(" ") || user.name || "Hustler";
+
+  return {
+    _id: user._id || user.id,
+    id: user.id,
+    name,
+    firstName,
+    lastName,
+    role: user.role,
+    location: user.location || "",
+    skills: Array.isArray(user.skills) ? user.skills : [],
+    bio: user.bio || "",
+    avatar: user.avatar || "",
+    experienceLevel: user.experienceLevel || "",
+    averageRating: Number(user.averageRating || 0),
+    totalReviews: Number(user.totalReviews || 0),
+    completedContracts: Number(user.completedContracts || 0),
+    isEmailVerified: Boolean(user.isEmailVerified),
+    identityVerified: Boolean(String(user.idNumber || "").trim() && String(user.mpesaNumber || "").trim()),
+  };
+}
+
 export class ContractApplicationService {
+  static async ensureMilestonesForHustler(contract, hustlerId) {
+    const maxWorkers = Math.max(1, Number(contract.numWorkers) || 1);
+    const workerAmount = (amount) => Number((Number(amount || 0) / maxWorkers).toFixed(2));
+    const existingForHustler = await Milestone.countDocuments({
+      contract: contract._id,
+      assignedTo: hustlerId,
+    });
+    if (existingForHustler > 0) return;
+
+    const milestones = await Milestone.find({ contract: contract._id }).sort({ createdAt: 1 });
+    const unassignedMilestones = milestones.filter((milestone) => !milestone.assignedTo);
+    if (unassignedMilestones.length > 0) {
+      for (const milestone of unassignedMilestones) {
+        milestone.assignedTo = hustlerId;
+        milestone.metadata = {
+          ...(milestone.metadata || {}),
+          originalAmount: milestone.metadata?.originalAmount ?? milestone.amount,
+        };
+        milestone.amount = workerAmount(milestone.metadata.originalAmount);
+        await milestone.save();
+      }
+      return;
+    }
+
+    const templateMilestones = milestones.filter((milestone) => !milestone.metadata?.sourceMilestoneId);
+    const sourceMilestones = templateMilestones.length ? templateMilestones : milestones;
+    const clonedMilestones = await Milestone.create(
+      sourceMilestones.map((milestone) => ({
+        contract: contract._id,
+        title: milestone.title,
+        description: milestone.description,
+        amount: workerAmount(milestone.metadata?.originalAmount ?? milestone.amount),
+        dueDate: milestone.dueDate,
+        assignedTo: hustlerId,
+        status: MILESTONE_STATUSES.PENDING,
+        workStatus: WORK_STATUS.NOT_STARTED,
+        paymentStatus: PAYMENT_STATUSES.PENDING,
+        metadata: {
+          ...(milestone.metadata || {}),
+          sourceMilestoneId: milestone.metadata?.sourceMilestoneId || milestone._id,
+          clonedForHustler: hustlerId,
+        },
+      }))
+    );
+    contract.milestones.push(...clonedMilestones.map((milestone) => milestone._id));
+    await contract.save();
+  }
+
+  static async ensureMilestonesForAcceptedHustlers(contractId) {
+    const contract = await Contract.findById(contractId);
+    if (!contract) return;
+
+    const acceptedApplications = await ContractApplication.find({
+      contractId: contract._id,
+      status: APPLICATION_STATUSES.ACCEPTED,
+    }).sort({ reviewedAt: 1, createdAt: 1 });
+
+    for (const acceptedApplication of acceptedApplications) {
+      await this.ensureMilestonesForHustler(contract, acceptedApplication.hustlerId);
+    }
+  }
+
+
   /**
    * Create a new application for a contract
    */
   static async createApplication(contractId, hustlerId, applicationData) {
-    // Check if hustler already applied for this contract
-    const existingApplication = await ContractApplication.findOne({
-      contractId,
-      hustlerId,
-    });
-
-    if (existingApplication) {
-      if (existingApplication.status === APPLICATION_STATUSES.CANCELLED) {
-        existingApplication.status = APPLICATION_STATUSES.PENDING;
-        existingApplication.coverLetter = applicationData.coverLetter;
-        existingApplication.proposedRate = applicationData.proposedRate;
-        existingApplication.estimatedDuration = applicationData.estimatedDuration;
-        existingApplication.attachments = applicationData.attachments || [];
-        existingApplication.appliedAt = new Date();
-        existingApplication.reviewedAt = null;
-        existingApplication.reviewedBy = null;
-        existingApplication.rejectionReason = undefined;
-        await existingApplication.save();
-        const contract = await Contract.findById(contractId);
-        notifications.emit("application.created", { application: existingApplication, contract });
-        return existingApplication;
+    try {
+      if (!mongoose.Types.ObjectId.isValid(contractId)) {
+        throw new ApiError(HTTP_STATUS.BAD_REQUEST, "Invalid contract id");
       }
-      throw new ApiError(HTTP_STATUS.CONFLICT, "You have already applied for this contract");
+      if (!mongoose.Types.ObjectId.isValid(hustlerId)) {
+        throw new ApiError(HTTP_STATUS.UNAUTHORIZED, "Invalid user session");
+      }
+
+      const normalizedContractId = new mongoose.Types.ObjectId(contractId);
+      const normalizedHustlerId = new mongoose.Types.ObjectId(hustlerId);
+
+      const hustler = await User.findById(normalizedHustlerId).select("idNumber mpesaNumber verificationStatus isEmailVerified");
+      if (!hustler) {
+        throw new ApiError(HTTP_STATUS.NOT_FOUND, "User not found");
+      }
+      requireIdentityVerification(hustler, "apply for contracts");
+      if (!hasApprovedIdentityVerification(hustler)) {
+        throw new ApiError(HTTP_STATUS.FORBIDDEN, "Your verification must be approved before you can apply for contracts.");
+      }
+
+      // Check if hustler already applied for this contract
+      const existingApplication = await ContractApplication.findOne({
+        contractId: normalizedContractId,
+        hustlerId: normalizedHustlerId,
+      });
+
+      if (existingApplication) {
+        const reapplyable = [APPLICATION_STATUSES.CANCELLED, APPLICATION_STATUSES.REJECTED];
+        if (reapplyable.includes(existingApplication.status)) {
+          existingApplication.status = APPLICATION_STATUSES.PENDING;
+          existingApplication.coverLetter = applicationData.coverLetter;
+          existingApplication.proposedRate = applicationData.proposedRate;
+          existingApplication.estimatedDuration = applicationData.estimatedDuration;
+          existingApplication.attachments = applicationData.attachments || [];
+          existingApplication.appliedAt = new Date();
+          existingApplication.reviewedAt = null;
+          existingApplication.reviewedBy = null;
+          existingApplication.rejectionReason = undefined;
+          await existingApplication.save();
+          const contract = await Contract.findById(normalizedContractId);
+          notifications.emit("application.created", { application: existingApplication, contract });
+          return existingApplication;
+        }
+        throw new ApiError(HTTP_STATUS.CONFLICT, "You have already applied for this contract");
+      }
+
+      // Check if contract exists
+      const contract = await Contract.findById(normalizedContractId);
+      if (!contract) {
+        throw new ApiError(HTTP_STATUS.NOT_FOUND, "Contract not found");
+      }
+
+      // Only allow applying to open/pending contracts
+      const applyableStatuses = [CONTRACT_STATUSES.PENDING, CONTRACT_STATUSES.ACTIVE];
+      if (!applyableStatuses.includes(contract.status)) {
+        throw new ApiError(
+          HTTP_STATUS.CONFLICT,
+          `This contract is no longer accepting applications (status: ${contract.status})`
+        );
+      }
+
+      // Block if all worker slots are already filled
+      const maxWorkers = Math.max(1, Number(contract.numWorkers) || 1);
+      const acceptedCount = await ContractApplication.countDocuments({
+        contractId: normalizedContractId,
+        status: APPLICATION_STATUSES.ACCEPTED,
+      });
+      if (acceptedCount >= maxWorkers) {
+        throw new ApiError(HTTP_STATUS.CONFLICT, "This contract has already filled all available positions");
+      }
+      const application = new ContractApplication({
+        contractId: normalizedContractId,
+        hustlerId: normalizedHustlerId,
+        status: APPLICATION_STATUSES.PENDING,
+        coverLetter: applicationData.coverLetter,
+        proposedRate: applicationData.proposedRate,
+        estimatedDuration: applicationData.estimatedDuration,
+        attachments: applicationData.attachments || [],
+      });
+
+      await application.save();
+      notifications.emit("application.created", { application, contract });
+      // Keep the contract open until a manager accepts an applicant. The
+      // application document is the source of truth for who has already applied.
+      return application;
+    } catch (error) {
+      if (error?.code === 11000) {
+        throw new ApiError(HTTP_STATUS.CONFLICT, "You have already applied for this contract");
+      }
+      if (error?.name === "CastError") {
+        throw new ApiError(HTTP_STATUS.BAD_REQUEST, "Invalid application request");
+      }
+      throw error;
     }
-
-    // Check if contract exists
-    const contract = await Contract.findById(contractId);
-    if (!contract) {
-      throw new ApiError(HTTP_STATUS.NOT_FOUND, "Contract not found");
-    }
-
-    // Create application
-    const application = new ContractApplication({
-      contractId,
-      hustlerId,
-      status: APPLICATION_STATUSES.PENDING,
-      coverLetter: applicationData.coverLetter,
-      proposedRate: applicationData.proposedRate,
-      estimatedDuration: applicationData.estimatedDuration,
-      attachments: applicationData.attachments || [],
-    });
-
-    await application.save();
-    notifications.emit("application.created", { application, contract });
-    // Keep the contract open until a manager accepts an applicant. The
-    // application document is the source of truth for who has already applied.
-    return application;
   }
 
   static async updateApplication(applicationId, hustlerId, applicationData) {
@@ -115,11 +261,14 @@ export class ContractApplicationService {
     }
 
     const applications = await ContractApplication.find(query)
-      .populate("hustlerId", "name email rating skills avatar")
+      .populate("hustlerId", "firstName lastName location skills bio avatar experienceLevel averageRating totalReviews completedContracts isEmailVerified idNumber mpesaNumber")
       .populate("contractId", "title amount currency")
       .sort({ appliedAt: -1 });
-
-    return applications;
+    return applications.map((application) => {
+      const record = application.toObject ? application.toObject() : application;
+      record.hustlerId = sanitizePublicHustlerProfile(record.hustlerId);
+      return record;
+    });
   }
 
   /**
@@ -140,9 +289,21 @@ export class ContractApplicationService {
     }
 
     const applications = await ContractApplication.find(query)
-      .populate("contractId", "title amount currency description jobCategory seller escrowStatus escrowPrepared status")
+      .populate("contractId", "title amount currency description jobCategory seller escrowStatus escrowPrepared status numWorkers metadata")
       .populate("reviewedBy", "name email")
       .sort({ appliedAt: -1 });
+
+    const acceptedApplications = applications.filter((application) => application.status === APPLICATION_STATUSES.ACCEPTED);
+    try {
+      for (const application of acceptedApplications) {
+        const contractId = application.contractId?._id || application.contractId;
+        if (contractId) {
+          await this.ensureMilestonesForAcceptedHustlers(contractId);
+        }
+      }
+    } catch (error) {
+      console.warn("[WARN] Failed to sync accepted hustler milestones during application load:", error?.message);
+    }
 
     // If no application documents exist, fall back to checking Contracts where appliedBy was used
     if (!applications || applications.length === 0) {
@@ -167,7 +328,11 @@ export class ContractApplicationService {
       return fallbackApplications;
     }
 
-    return applications;
+    return applications.map((application) => {
+      const record = application.toObject ? application.toObject() : application;
+      record.hustlerId = sanitizePublicHustlerProfile(record.hustlerId);
+      return record;
+    });
   }
 
   /**
@@ -177,7 +342,7 @@ export class ContractApplicationService {
     const application = await ContractApplication.findById(applicationId)
       .populate({
         path: "hustlerId",
-        select: "name email phone rating skills avatar bio workExperience certifications",
+        select: "firstName lastName location skills bio avatar experienceLevel averageRating totalReviews completedContracts isEmailVerified idNumber mpesaNumber",
       })
       .populate({
         path: "contractId",
@@ -189,7 +354,9 @@ export class ContractApplicationService {
       throw new ApiError(HTTP_STATUS.NOT_FOUND, "Application not found");
     }
 
-    return application;
+    const record = application.toObject ? application.toObject() : application;
+    record.hustlerId = sanitizePublicHustlerProfile(record.hustlerId);
+    return record;
   }
 
   /**
@@ -233,6 +400,7 @@ export class ContractApplicationService {
     if (!contract.seller) {
       contract.seller = application.hustlerId;
     }
+    await this.ensureMilestonesForAcceptedHustlers(contract._id);
     if (!contract.escrowPrepared) {
       contract.escrowStatus = ESCROW_STATUSES.WAITING_FOR_FUNDING;
     }
@@ -324,10 +492,13 @@ export class ContractApplicationService {
       contractId,
       status: APPLICATION_STATUSES.PENDING,
     })
-      .populate("hustlerId", "name email rating skills avatar")
+      .populate("hustlerId", "firstName lastName location skills bio avatar experienceLevel averageRating totalReviews completedContracts isEmailVerified idNumber mpesaNumber")
       .sort({ appliedAt: -1 });
-
-    return applications;
+    return applications.map((application) => {
+      const record = application.toObject ? application.toObject() : application;
+      record.hustlerId = sanitizePublicHustlerProfile(record.hustlerId);
+      return record;
+    });
   }
 }
 

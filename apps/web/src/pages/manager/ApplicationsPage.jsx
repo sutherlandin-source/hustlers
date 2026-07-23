@@ -4,13 +4,17 @@
  */
 
 import React, { useMemo, useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext.jsx";
 import Loader from "../../components/Loader.jsx";
 import ErrorBanner from "../../components/ErrorBanner.jsx";
+import PublicHustlerProfileModal from "../../components/PublicHustlerProfileModal.jsx";
 import ContractApplicationsService from "../../services/contractApplicationsService.js";
+import { conversationsService } from "../../services/conversationsService.js";
 import { contractsService } from "../../services/contractsService.js";
 import useApplicationStore from "../../state/useApplicationStore.js";
+import { isManagerRole } from "../../utils/roles.js";
+import { getKycProfilePath, hasKycVerification } from "../../utils/kyc.js";
 
 function formatMoney(amount, currency = "KSH") {
   return `${currency} ${Number(amount || 0).toLocaleString()}`;
@@ -27,14 +31,83 @@ function getApplicationContractId(application) {
 
 function getApplicantName(application) {
   const hustler = application?.hustlerId || {};
-  return hustler.name || hustler.email || "Unknown applicant";
+  return hustler.name || [hustler.firstName, hustler.lastName].filter(Boolean).join(" ") || "Unknown applicant";
 }
 
 function isContractFunded(contract) {
   return Boolean(contract?.escrowPrepared) || ["funded", "in_progress", "awaiting_approval", "released"].includes(contract?.escrowStatus);
 }
 
+// ─── Sort / filter ────────────────────────────────────────────────────────────
+
+const STATUS_FILTERS = [
+  { key: "all",      label: "All"      },
+  { key: "pending",  label: "Has Pending" },
+  { key: "accepted", label: "Has Accepted" },
+  { key: "rejected", label: "All Rejected" },
+];
+
+const SORT_OPTIONS = [
+  { key: "newest",       label: "Newest first"          },
+  { key: "oldest",       label: "Oldest first"          },
+  { key: "most_apps",    label: "Most applicants"       },
+  { key: "most_pending", label: "Most pending"          },
+  { key: "title_asc",    label: "Title: A → Z"          },
+  { key: "title_desc",   label: "Title: Z → A"          },
+  { key: "amount_desc",  label: "Budget: high → low"    },
+  { key: "amount_asc",   label: "Budget: low → high"    },
+];
+
+function applyGroupFiltersAndSort(groups, search, filter, sort) {
+  let result = groups;
+
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
+    result = result.filter((g) =>
+      [g.contract?.title, g.contract?.description, g.contract?.jobCategory]
+        .filter(Boolean).join(" ").toLowerCase().includes(q)
+    );
+  }
+
+  if (filter !== "all") {
+    result = result.filter((g) => {
+      const apps = g.applications || [];
+      if (filter === "pending")  return apps.some((a) => a.status === "pending");
+      if (filter === "accepted") return apps.some((a) => ["accepted", "approved", "active"].includes(a.status));
+      if (filter === "rejected") return apps.length > 0 && apps.every((a) => ["rejected", "cancelled"].includes(a.status));
+      return true;
+    });
+  }
+
+  const sorted = [...result];
+  switch (sort) {
+    case "oldest":
+      return sorted.sort((a, b) => new Date(a.latestAppliedAt || 0) - new Date(b.latestAppliedAt || 0));
+    case "most_apps":
+      return sorted.sort((a, b) => (b.applications?.length || 0) - (a.applications?.length || 0));
+    case "most_pending":
+      return sorted.sort((a, b) => {
+        const pa = (a.applications || []).filter((x) => x.status === "pending").length;
+        const pb = (b.applications || []).filter((x) => x.status === "pending").length;
+        return pb - pa;
+      });
+    case "title_asc":
+      return sorted.sort((a, b) => String(a.contract?.title || "").localeCompare(String(b.contract?.title || "")));
+    case "title_desc":
+      return sorted.sort((a, b) => String(b.contract?.title || "").localeCompare(String(a.contract?.title || "")));
+    case "amount_desc":
+      return sorted.sort((a, b) => Number(b.contract?.amount || 0) - Number(a.contract?.amount || 0));
+    case "amount_asc":
+      return sorted.sort((a, b) => Number(a.contract?.amount || 0) - Number(b.contract?.amount || 0));
+    case "newest":
+    default:
+      return sorted.sort((a, b) => new Date(b.latestAppliedAt || 0) - new Date(a.latestAppliedAt || 0));
+  }
+}
+
 export default function ApplicationsPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const {
     acceptApplication,
@@ -55,8 +128,12 @@ export default function ApplicationsPage() {
   const [rejectionReason, setRejectionReason] = useState("");
   const [rejectionError, setRejectionError] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
-  const [actionStatus, setActionStatus] = useState(null); // 'accepted' | 'rejected' | null
+  const [messagingLoading, setMessagingLoading] = useState(false);
+  const [actionStatus, setActionStatus] = useState(null);
   const [fundingNotice, setFundingNotice] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("newest");
 
   const applicationGroups = useMemo(() => {
     const map = new Map();
@@ -80,6 +157,11 @@ export default function ApplicationsPage() {
     });
     return Array.from(map.values()).sort((a, b) => new Date(b.latestAppliedAt || 0) - new Date(a.latestAppliedAt || 0));
   }, [applications]);
+
+  const visibleGroups = useMemo(
+    () => applyGroupFiltersAndSort(applicationGroups, search, filter, sortBy),
+    [applicationGroups, search, filter, sortBy]
+  );
 
   // Load applications for all contracts
   useEffect(() => {
@@ -127,6 +209,13 @@ export default function ApplicationsPage() {
         try {
           let freshContract = await contractsService.get(contractId);
           if (applicationDetails.status === "accepted" && !isContractFunded(freshContract)) {
+            if (!hasKycVerification(user)) {
+              navigate(getKycProfilePath(location.pathname), {
+                state: { from: location.pathname },
+                replace: true,
+              });
+              return;
+            }
             try {
               await contractsService.prepareEscrow(contractId, Number(freshContract.amount || 0));
               freshContract = await contractsService.get(contractId);
@@ -269,6 +358,26 @@ export default function ApplicationsPage() {
     }
   };
 
+  const handleMessageApplicant = async () => {
+    try {
+      const hustler = selectedApplication?.hustlerId || {};
+      const hustlerId = hustler?._id || hustler?.id;
+      if (!hustlerId) return;
+
+      setMessagingLoading(true);
+      const contractId = getApplicationContractId(selectedApplication);
+      const conversation = await conversationsService.createConversation({
+        participants: [user?._id || user?.userId || user?.id, hustlerId],
+        ...(contractId ? { contractId } : {}),
+      });
+      navigate(`/manager/chat/${conversation._id || conversation.id}`, { replace: true });
+    } catch (err) {
+      console.error("Failed to open conversation with applicant:", err);
+    } finally {
+      setMessagingLoading(false);
+    }
+  };
+
   if (applicationsLoading) {
     return <Loader />;
   }
@@ -289,8 +398,62 @@ export default function ApplicationsPage() {
           <p>Browse contracts to find work you can apply for.</p>
         </div>
       ) : (
+        <>
+          {/* Toolbar */}
+          <div className="contracts-toolbar" style={{ flexWrap: "wrap", gap: 10 }}>
+            <div className="contracts-filter-bar" role="tablist" aria-label="Application filters" style={{ flexWrap: "wrap" }}>
+              {STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  className={`contracts-filter ${filter === f.key ? "active" : ""}`}
+                  onClick={() => setFilter(f.key)}
+                  aria-pressed={filter === f.key}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div className="contracts-toolbar-actions">
+              <label className="contracts-search">
+                <svg viewBox="0 0 20 20" aria-hidden="true" style={{ width: 16, height: 16 }}>
+                  <path d="M13.3 12.1 16.6 15.4l-1.2 1.2-3.3-3.3a6 6 0 1 1 1.2-1.2zM8.5 13a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z" />
+                </svg>
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search contracts…"
+                  aria-label="Search applications"
+                />
+              </label>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                aria-label="Sort applications"
+                style={{
+                  border: "1px solid #E2E8F0", borderRadius: 8,
+                  padding: "7px 12px", fontSize: "0.875rem",
+                  fontWeight: 600, color: "#0F172A",
+                  background: "#fff", cursor: "pointer", outline: "none",
+                }}
+              >
+                {SORT_OPTIONS.map((opt) => (
+                  <option key={opt.key} value={opt.key}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {visibleGroups.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">0</div>
+              <h3>No matching applications</h3>
+              <p>Try adjusting your search or filter.</p>
+            </div>
+          ) : (
         <div className="applications-grid">
-          {applicationGroups.map((group) => {
+          {visibleGroups.map((group) => {
             const contract = group.contract || {};
             const title = contract.title || "Untitled";
             const description = contract.description || "";
@@ -358,17 +521,14 @@ export default function ApplicationsPage() {
                 )}
 
                 <div className="card-actions action-controls">
-                  <button className="btn-view-profile" onClick={() => handleViewDetails(app)}>View profile</button>
-                  {user?.role === 'manager' && app.status === 'pending' && (
-                    <>
-                      <button onClick={() => handleViewDetails(app)} className="btn-quick-accept">Review</button>
-                    </>
-                  )}
+                  <button className="btn-view-profile" onClick={() => handleViewDetails(app)}>View application</button>
                 </div>
               </div>
             );
           })}
         </div>
+          )}
+        </>
       )}
 
       {/* Application Details Modal */}
@@ -415,90 +575,20 @@ export default function ApplicationsPage() {
             )}
 
             <div className="application-details">
-              {/* Applicant Profile */}
-              <div className="applicant-section">
-                <h3>Applicant Profile</h3>
-                <div className="applicant-info">
-                  {selectedApplication.hustlerId?.avatar && (
-                    <img
-                      src={selectedApplication.hustlerId.avatar}
-                      alt={selectedApplication.hustlerId.name}
-                      className="applicant-avatar"
-                    />
-                  )}
-                  <div className="applicant-details">
-                    <h4>{selectedApplication.hustlerId?.name}</h4>
-                    <p className="email">{selectedApplication.hustlerId?.email}</p>
-                    {selectedApplication.hustlerId?.rating && (
-                      <p className="rating">
-                        {selectedApplication.hustlerId.rating} rating
-                      </p>
-                    )}
-                    {selectedApplication.hustlerId?.skills && (
-                      <div className="skills">
-                        {selectedApplication.hustlerId.skills.map((skill) => (
-                          <span key={skill} className="skill-tag">
-                            {skill}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Application Details */}
-              <div className="application-section">
-                <h3>Application Details</h3>
-                {selectedApplication.coverLetter && (
-                  <div className="detail-item">
-                    <label>Cover Letter</label>
-                    <p>{selectedApplication.coverLetter}</p>
-                  </div>
-                )}
-                {selectedApplication.proposedRate && (
-                  <div className="detail-item">
-                    <label>Proposed Rate</label>
-                    <p>
-                      {selectedApplication.proposedRate}{" "}
-                      {selectedApplication.contractId?.currency}
-                    </p>
-                  </div>
-                )}
-                {selectedApplication.estimatedDuration && (
-                  <div className="detail-item">
-                    <label>Estimated Duration</label>
-                    <p>{selectedApplication.estimatedDuration}</p>
-                  </div>
-                )}
-                <div className="detail-item">
-                  <label>Applied On</label>
-                  <p>
-                    {new Date(selectedApplication.appliedAt).toLocaleDateString()} at{" "}
-                    {new Date(selectedApplication.appliedAt).toLocaleTimeString()}
-                  </p>
-                </div>
-              </div>
-
-              {/* Contract Details */}
-              <div className="contract-section">
-                <h3>Contract Details</h3>
-                <div className="detail-item">
-                  <label>Title</label>
-                  <p>{getApplicationContract(selectedApplication).title || "Untitled contract"}</p>
-                </div>
-                <div className="detail-item">
-                  <label>Budget</label>
-                  <p>
-                    {getApplicationContract(selectedApplication).amount}{" "}
-                    {getApplicationContract(selectedApplication).currency}
-                  </p>
-                </div>
-                <div className="detail-item">
-                  <label>Category</label>
-                  <p>{getApplicationContract(selectedApplication).jobCategory || "Not set"}</p>
-                </div>
-              </div>
+              <PublicHustlerProfileModal
+                application={selectedApplication}
+                onClose={() => setShowDetailsModal(false)}
+                onApprove={handleAccept}
+                onReject={() => {
+                  setShowDetailsModal(false);
+                  setShowRejectModal(true);
+                }}
+                onMessage={handleMessageApplicant}
+                approving={actionLoading}
+                rejecting={actionLoading && actionStatus === "rejected"}
+                messaging={messagingLoading}
+                embedded
+              />
 
               {/* Status Display */}
               {/* Status display or action controls (manager only) */}
@@ -532,37 +622,31 @@ export default function ApplicationsPage() {
                   </div>
                 )}
 
-                {selectedApplication.status === "pending" && user?.role === "manager" && (
-                  <div className="modal-actions action-controls">
-                    <button
-                      className="btn-view-profile"
-                      onClick={() => {
-                        // quick link to profile or view more info
-                      }}
-                    >
-                      View profile
-                    </button>
-
-                    <button
-                      className="btn-reject"
-                      onClick={() => {
-                        setShowDetailsModal(false);
-                        setShowRejectModal(true);
-                      }}
-                      disabled={actionLoading || loading}
-                    >
-                      Reject
-                    </button>
-
-                    <button
-                      className="btn-accept"
-                      onClick={handleAccept}
-                      disabled={actionLoading || loading}
-                    >
-                      {actionLoading ? "Processing..." : "Accept Application"}
-                    </button>
+                {selectedApplication.status === "pending" && isManagerRole(user?.role) && (
+                  <div className="status-pending" style={{ marginTop: "1rem" }}>
+                    <p>Use the actions below to approve, reject, or message the applicant.</p>
                   </div>
                 )}
+
+                <div className="application-actions-inline">
+                  <button type="button" className="button-primary" onClick={handleAccept} disabled={actionLoading || messagingLoading || selectedApplication.status === "accepted"}>
+                    {actionLoading ? "Approving..." : "Approve applicant"}
+                  </button>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => {
+                      setShowDetailsModal(false);
+                      setShowRejectModal(true);
+                    }}
+                    disabled={actionLoading || messagingLoading || selectedApplication.status === "rejected"}
+                  >
+                    Reject applicant
+                  </button>
+                  <button type="button" className="button-secondary" onClick={handleMessageApplicant} disabled={actionLoading || messagingLoading}>
+                    {messagingLoading ? "Opening chat..." : "Message applicant"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
