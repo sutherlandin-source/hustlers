@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext.jsx";
+import { getLandingPath } from "../utils/roles.js";
 
 export default function NotFoundPage() {
   const { isAuthenticated, user } = useAuth();
-  const dashboardLink = user?.role === "manager" ? "/manager" : "/dashboard";
+  const dashboardLink = getLandingPath(user?.role);
 
   return (
     <section className="page-section">
